@@ -164,7 +164,9 @@ def run():
 
     class VSplitter(QtWidgets.QSplitter):
         def createHandle(self, _=None):
-            return DotHandle(QT.Horizontal, self)
+            # 手柄 orientation 必须等于分隔器的方向（垂直分隔器传 Vertical）：
+            # 传反了会变成“鼠标左右滑才上下缩放、上下滑没反应”
+            return DotHandle(self.orientation(), self)
 
     table = QtWidgets.QTableWidget(0, 3)
     table.setHorizontalHeaderLabels(["账号（双击切换，可多选）", "UID", "有效期至"])
