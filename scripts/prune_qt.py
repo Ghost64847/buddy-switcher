@@ -24,8 +24,8 @@ NAME_KILLS = (
     "QtQuick*", "Qt6Quick*", "libQt6Quick*",
     "QtVirtualKeyboard*", "Qt6VirtualKeyboard*", "libQt6VirtualKeyboard*",
     "QtOpenGL*", "Qt6OpenGL*", "libQt6OpenGL*",
-    "QtNetwork*", "Qt6Network*", "libQt6Network*",
-    "QtDBus*", "Qt6DBus*", "libQt6DBus*",
+    # 注意：QtDBus / QtNetwork 不能剪——QtGui 框架自身链接它们
+    # （Qt 6.12 mac 构建），剪了直接闪退。
 )
 
 

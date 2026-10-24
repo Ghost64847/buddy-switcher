@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "buddy_gui.py", line 36, in run
+    from PySide6 import QtCore, QtGui, QtWidgets
+ImportError: dlopen(/Users/Gray/Desktop/WBSwitch/dist/Buddy Switcher.app/Contents/Frameworks/PySide6/QtGui.abi3.so, 0x0002): Library not loaded: @rpath/QtDBus
+  Referenced from: <0ADC7F4E-0530-351E-B446-2C38E090134E> /Users/Gray/Desktop/WBSwitch/dist/Buddy Switcher.app/Contents/Frameworks/PySide6/Qt/lib/QtGui.framework/Versions/A/QtGui
+  Reason: tried: '/Users/Gray/Desktop/WBSwitch/dist/Buddy Switcher.app/Contents/Frameworks/PySide6/Qt/lib/QtGui.framework/Versions/A/../../../../../../QtDBus' (no such file), '/Users/Gray/Desktop/WBSwitch/dist/Buddy Switcher.app/Contents/Frameworks/PySide6/../QtDBus' (no such file), '/Users/Gray/Desktop/WBSwitch/dist/Buddy Switcher.app/Contents/Frameworks/PySide6/../QtDBus' (no such file)
+图形界面需要 PySide6（pip install PySide6）。
+命令行模式不受影响：buddy_switch.py list / switch <uid> 等。

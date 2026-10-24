@@ -1,0 +1,2 @@
+图形界面需要 PySide6（pip install PySide6）。
+命令行模式不受影响：buddy_switch.py list / switch <uid> 等。
