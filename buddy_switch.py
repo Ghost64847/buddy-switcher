@@ -1101,14 +1101,23 @@ def gui():
     root.columnconfigure(0, weight=1)
     root.rowconfigure(1, weight=1)   # 列表 + 日志（拖动分隔条调整占比）
 
-    PALETTES = {
-        "light": {"page": "#f5f6f8", "card": "#ffffff", "text": "#1f2328",
-                  "subtle": "#6b7280", "select": "#3478f6",
-                  "status_bg": "#ebedf0", "status_fg": "#374151"},
-        "dark": {"page": "#1d1d20", "card": "#27272a", "text": "#d7d7db",
-                 "subtle": "#9a9aa2", "select": "#3478f6",
-                 "status_bg": "#27272a", "status_fg": "#c6c6cb"},
+    # 跟随系统：全部用 macOS 官方系统色，深浅切换和系统一致、不割裂；
+    # 浅色/深色是手动覆盖（Windows 或想固定外观时用）
+    SYS_PALETTE = {
+        "page": "systemUnderPageBackgroundColor",
+        "card": "systemWindowBackgroundColor",
+        "text": "systemLabelColor",
+        "subtle": "systemSecondaryLabelColor",
+        "select": "systemControlAccentColor",
     }
+    MANUAL_PALETTES = {
+        "light": {"page": "#f5f6f8", "card": "#ffffff", "text": "#1f2328",
+                  "subtle": "#6b7280", "select": "#3478f6"},
+        "dark": {"page": "#1d1d20", "card": "#27272a", "text": "#d7d7db",
+                 "subtle": "#9a9aa2", "select": "#3478f6"},
+    }
+    if IS_WIN:  # Windows 没有系统色名，跟随系统时手动选调色板
+        SYS_PALETTE = MANUAL_PALETTES["light"]
     theme_now = {"key": None}
     cards = []
     style = ttk.Style()
@@ -1120,23 +1129,29 @@ def gui():
             continue
     style.configure("Big.TButton", font=(UI_FONT, 13, "bold"))
 
+    def current_palette():
+        pal = MANUAL_PALETTES.get(cfg.get("theme", "auto"))
+        if pal:
+            return pal
+        if IS_WIN:
+            return MANUAL_PALETTES["dark" if system_dark() else "light"]
+        return SYS_PALETTE
+
     def apply_theme(force=False):
-        name = cfg.get("theme", "auto")
-        if name == "auto":
-            name = "dark" if system_dark() else "light"
-        if not force and theme_now["key"] == name:
+        pal = current_palette()
+        key = cfg.get("theme", "auto")
+        if not force and theme_now["key"] == key:
             return
-        theme_now["key"] = name
-        pal = PALETTES[name]
+        theme_now["key"] = key
         root.configure(background=pal["page"])
         style.configure("TFrame", background=pal["page"])
         style.configure("Title.TLabel", background=pal["page"],
                         foreground=pal["text"], font=(UI_FONT, 18, "bold"))
         style.configure("Subtle.TLabel", background=pal["page"],
                         foreground=pal["subtle"], font=(UI_FONT, 11))
-        style.configure("Status.TFrame", background=pal["status_bg"])
-        style.configure("Status.TLabel", background=pal["status_bg"],
-                        foreground=pal["status_fg"], font=(UI_FONT, 11))
+        style.configure("Status.TFrame", background=pal["page"])
+        style.configure("Status.TLabel", background=pal["page"],
+                        foreground=pal["subtle"], font=(UI_FONT, 11))
         style.configure("Treeview", rowheight=30, background=pal["card"],
                         fieldbackground=pal["card"], foreground=pal["text"],
                         borderwidth=0, font=(UI_FONT, 12))
@@ -1152,11 +1167,9 @@ def gui():
         for card in cards:
             card.retheme(pal)
 
-    def watch_theme():
-        # 「跟随系统」时每分钟检查一次系统外观变化
-        if cfg.get("theme", "auto") == "auto":
-            apply_theme()
-        root.after(60000, watch_theme)
+    def on_theme_changed(_event=None):
+        # 系统深浅色切换时，Tk 的系统色自动更新，这里强制重画自绘的卡片
+        apply_theme(force=True)
 
     class Card(tk.Canvas):
         """无边框圆角卡片（macOS 访达风格），内容放进 .body。
@@ -1186,7 +1199,7 @@ def gui():
 
         def _on_resize(self, _event):
             w, h = self.winfo_width(), self.winfo_height()
-            r = 10
+            r = 12  # macOS 官方内容卡片圆角
             rect_h, rect_v, ne, nw, sw, se = self._items
             self.coords(rect_h, r, 0, w - r, h)
             self.coords(rect_v, 0, r, w, h - r)
@@ -1212,7 +1225,8 @@ def gui():
     list_card = Card(paned)
     log_card = Card(paned)
     paned.add(list_card, minsize=140, stretch="always")
-    paned.add(log_card, minsize=30, stretch="never")
+    # 日志有最小高度，拖不小；隐藏只用状态栏按钮
+    paned.add(log_card, minsize=110, stretch="never")
 
     list_body = list_card.body
     list_body.columnconfigure(0, weight=1)
@@ -1235,13 +1249,15 @@ def gui():
                       padx=10, pady=8, font=(MONO_FONT, 10))
     log_box.pack(fill="both", expand=True)
 
-    # 2 工具栏（其余操作都在右键菜单里）
+    # 2 工具栏（其余操作在右键菜单）
     bar = ttk.Frame(root, padding=(18, 10, 18, 6))
     bar.grid(row=2, column=0, sticky="ew")
     btn_import = ttk.Button(bar, text="导入账号…")
     btn_import.pack(side="left")
     btn_capture = ttk.Button(bar, text="保存选中账号")
     btn_capture.pack(side="left", padx=(8, 0))
+    btn_export = ttk.Button(bar, text="导出账号…")
+    btn_export.pack(side="left", padx=(8, 0))
     btn_switch = ttk.Button(bar, text="切换账号 ▶", style="Big.TButton")
     btn_switch.pack(side="right", ipady=3)
 
@@ -1257,7 +1273,7 @@ def gui():
     btn_log.pack(side="right", padx=4, pady=3)
 
     busy = {"value": False}
-    buttons = [btn_switch, btn_import, btn_capture]
+    buttons = [btn_switch, btn_import, btn_capture, btn_export]
     log_ui = {"hidden": False, "sash": 0}
     timer = {"id": None}
 
@@ -1294,7 +1310,7 @@ def gui():
     def expand_log():
         if not log_ui["hidden"]:
             return
-        paned.add(log_card, minsize=30, stretch="never")
+        paned.add(log_card, minsize=110, stretch="never")
         pos = log_ui["sash"] or max(220, paned.winfo_height() - 170)
         root.after_idle(lambda: sash_set(pos))
         log_ui["hidden"] = False
@@ -1302,15 +1318,6 @@ def gui():
 
     def toggle_log():
         collapse_log() if not log_ui["hidden"] else expand_log()
-
-    def on_pane_motion(_event):
-        # 像 VS Code 一样：拖到底线立即收起，不用等松开鼠标
-        if not log_ui["hidden"] and log_card.winfo_height() <= 38:
-            collapse_log()
-
-    def on_sash_release(_event):
-        if not log_ui["hidden"] and log_card.winfo_height() <= 40:
-            collapse_log()
 
     # 多选选中色兜底：原生主题不吃 style.map 时用 tag 上色
     def on_select(_event):
@@ -1782,10 +1789,10 @@ def gui():
     btn_switch.configure(command=on_switch)
     btn_import.configure(command=on_import)
     btn_capture.configure(command=on_capture)
+    btn_export.configure(command=on_export)
     btn_settings.configure(command=on_settings)
     btn_log.configure(command=toggle_log)
-    paned.bind("<B1-Motion>", on_pane_motion)
-    paned.bind("<ButtonRelease-1>", on_sash_release)
+    root.bind("<<ThemeChanged>>", on_theme_changed)
     tree.bind("<Double-1>", on_switch)
     tree.bind("<Return>", on_switch)
     tree.bind("<Button-3>", on_menu)
@@ -1801,7 +1808,6 @@ def gui():
     append_log("提示：首次同步 IDE 时如弹出钥匙串授权，请点「始终允许」。")
     root.after(150, lambda: sash_set(max(220, paned.winfo_height() - 165)))
     schedule_auto()
-    watch_theme()
     root.mainloop()
 
 
