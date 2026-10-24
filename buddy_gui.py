@@ -85,7 +85,11 @@ def run():
     layout.addWidget(current_label)
 
     class DotHandle(QtWidgets.QSplitterHandle):
-        """VS Code 式分隔手柄：一条细线中间三个圆点"""
+        """VS Code 式分隔手柄：一条细线中间三个圆点，可上下拖动调整分区"""
+
+        def __init__(self, orientation, parent):
+            super().__init__(orientation, parent)
+            self.setCursor(QT.SizeVerCursor)  # 告诉用户可以上下拖
 
         def paintEvent(self, event):
             from PySide6 import QtCore, QtGui
@@ -659,7 +663,8 @@ def run():
 
     def toggle_log(checked=False):
         log_hidden["value"] = not log_hidden["value"]
-        log.setVisible(not log_hidden["value"])
+        # 整个日志卡片（含圆角框）一起隐藏，不留空框
+        log_card.setVisible(not log_hidden["value"])
         btn_log.setText("显示日志" if log_hidden["value"] else "隐藏日志")
 
     def context_menu(pos):
