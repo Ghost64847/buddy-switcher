@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -74,6 +75,14 @@ class DocLogicTest(unittest.TestCase):
         ok, _ = bs.validate(doc)
         self.assertTrue(ok)
 
+    def test_safe_uid_blocks_traversal(self):
+        for evil in ("../../etc/passwd", "..\\..\\x", "a/b/c", "...", "", None):
+            cleaned = bs.safe_uid(evil)
+            self.assertNotIn("/", cleaned)
+            self.assertNotIn("\\", cleaned)
+            self.assertNotIn(".", cleaned)
+            self.assertTrue(cleaned)  # 永不为空
+
 
 class StoreTest(unittest.TestCase):
     def setUp(self):
@@ -92,8 +101,7 @@ class StoreTest(unittest.TestCase):
 
     def _write_doc(self, name="in.json"):
         src = safe_join(self.tmp, name)
-        with open(src, "w", encoding="utf-8") as f:
-            json.dump(fake_doc(), f)
+        Path(src).write_text(json.dumps(fake_doc()), encoding="utf-8")
         return src
 
     def test_import_and_list(self):
@@ -106,8 +114,7 @@ class StoreTest(unittest.TestCase):
 
     def test_import_rejects_bad_file(self):
         src = safe_join(self.tmp, "bad.json")
-        with open(src, "w", encoding="utf-8") as f:
-            json.dump([1, 2], f)
+        Path(src).write_text(json.dumps([1, 2]), encoding="utf-8")
         with self.assertRaises(ValueError):
             bs.import_profile(src)
 
@@ -121,8 +128,8 @@ class StoreTest(unittest.TestCase):
         legacy = safe_join(self.tmp, "legacy")
         legacy_profiles = safe_join(legacy, "profiles")
         os.makedirs(legacy_profiles)
-        with open(safe_join(legacy_profiles, "a.json"), "w", encoding="utf-8") as f:
-            json.dump(fake_doc(), f)
+        Path(safe_join(legacy_profiles, "a.json")).write_text(
+            json.dumps(fake_doc()), encoding="utf-8")
         old_store = bs.LEGACY_STORE
         bs.LEGACY_STORE = legacy
         try:

@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 IS_WIN = (os.name == "nt")
 HOME = os.path.expanduser("~")
@@ -140,14 +141,26 @@ def load_config():
 def save_config(cfg):
     os.makedirs(STORE, exist_ok=True)
     tmp = CONFIG + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    Path(tmp).write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, CONFIG)
 
 
+def safe_uid(uid):
+    """把账号 uid 清洗成安全文件名片段，杜绝 ../ 之类的路径穿越"""
+    u = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (uid or ""))
+    return (u or "unknown")[:64]
+
+
+def resolve_user_file(path):
+    """规范化用户传入的文件路径，必须指向一个已存在的文件"""
+    p = os.path.realpath(os.path.expanduser(path))
+    if not os.path.isfile(p):
+        raise ValueError("文件不存在：%s" % path)
+    return p
+
+
 def read_json(path):
-    with open(path, "r", encoding="utf-8-sig") as f:
-        return json.load(f)
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
 def read_info(path=None):
@@ -165,8 +178,8 @@ def write_info(doc, path=None):
     path = path or TARGET
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".buddytmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(doc, f, ensure_ascii=False, separators=(",", ":"))
+    Path(tmp).write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")),
+                         encoding="utf-8")
     try:
         os.chmod(tmp, 0o600)
     except OSError:
@@ -368,12 +381,12 @@ def make_doc(src, template=None):
 
 
 def import_profile(path):
-    doc = read_json(path)
+    doc = read_json(resolve_user_file(path))
     ok, msg = validate(doc)
     if not ok:
         raise ValueError(msg)
     ensure_dirs()
-    uid = account_uid(doc) or "unknown"
+    uid = safe_uid(account_uid(doc))
     pp = os.path.join(PROFILE_DIR, "%s.json" % uid)
     write_info(doc, pp)
     log("导入账号 %s (%s)" % (account_label(doc), uid))
@@ -385,7 +398,7 @@ def capture_current():
     if not doc:
         raise ValueError("当前没有登录文件，无法保存。")
     ensure_dirs()
-    uid = account_uid(doc) or "unknown"
+    uid = safe_uid(account_uid(doc))
     pp = os.path.join(PROFILE_DIR, "%s.json" % uid)
     write_info(doc, pp)
     log("保存当前账号 %s (%s)" % (account_label(doc), uid))
@@ -393,7 +406,7 @@ def capture_current():
 
 
 def delete_profile(uid):
-    pp = os.path.join(PROFILE_DIR, "%s.json" % uid)
+    pp = os.path.join(PROFILE_DIR, "%s.json" % safe_uid(uid))
     if os.path.exists(pp):
         os.remove(pp)
         log("删除账号档案 %s" % uid)
@@ -429,11 +442,11 @@ def backup_current(tag="switch"):
     if not doc:
         return None
     ensure_dirs()
-    uid = account_uid(doc) or "unknown"
+    uid = safe_uid(account_uid(doc))
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    dst = os.path.join(BACKUP_DIR, "workbuddy-desktop.%s.%s.%s.info" % (ts, tag, uid[:8]))
-    with open(dst, "w", encoding="utf-8") as f:
-        json.dump(doc, f, ensure_ascii=False)
+    dst = os.path.join(BACKUP_DIR, "workbuddy-desktop.%s.%s.%s.info"
+                       % (ts, safe_uid(tag), uid[:8]))
+    Path(dst).write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
     try:
         os.chmod(dst, 0o600)
     except OSError:
@@ -481,8 +494,7 @@ def _unpad(b):
 def _aes_cbc(openssl, data, key, decrypt):
     tmp = os.path.join(STORE, ".crypt.tmp")
     os.makedirs(STORE, exist_ok=True)
-    with open(tmp, "wb") as f:
-        f.write(data)
+    Path(tmp).write_bytes(data)
     cmd = [openssl, "enc", "-d" if decrypt else "-e", "-aes-128-cbc",
            "-K", key.hex(), "-iv", "20" * 16, "-nopad", "-in", tmp]
     try:
@@ -575,7 +587,7 @@ def read_ide_session(key):
 
 
 def ide_snapshot_path(uid):
-    return os.path.join(PROFILE_DIR, "ide-session-%s.json" % (uid or "unknown"))
+    return os.path.join(PROFILE_DIR, "ide-session-%s.json" % safe_uid(uid))
 
 
 def save_ide_snapshot(key_name, secret_value, blob_value, uid):
@@ -585,8 +597,7 @@ def save_ide_snapshot(key_name, secret_value, blob_value, uid):
            "blobKey": IDE_BLOB_KEY, "blob": blob_value,
            "savedAt": int(time.time() * 1000)}
     dst = ide_snapshot_path(uid)
-    with open(dst, "w", encoding="utf-8") as f:
-        json.dump(doc, f, ensure_ascii=False)
+    Path(dst).write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
     try:
         os.chmod(dst, 0o600)
     except OSError:
@@ -1082,7 +1093,7 @@ def gui():
                 tags.append("expired")
             tree.insert("", "end", iid=p["path"], values=(name, exp_txt), tags=tags)
         if keep_uid:
-            iid = os.path.join(PROFILE_DIR, "%s.json" % keep_uid)
+            iid = os.path.join(PROFILE_DIR, "%s.json" % safe_uid(keep_uid))
             if iid in tree.get_children():
                 tree.selection_set(iid)
                 tree.see(iid)
@@ -1317,8 +1328,8 @@ def cli(argv):
     if cmd == "switch" and len(argv) > 1:
         key = argv[1]
         doc = None
-        if os.path.exists(key):
-            doc = read_json(key)
+        if os.path.exists(os.path.expanduser(key)):
+            doc = read_json(resolve_user_file(key))
         else:
             for p in list_profiles():
                 if p["uid"] == key or p["label"] == key:
