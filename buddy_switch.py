@@ -38,7 +38,7 @@ IS_LINUX = (not IS_WIN) and (sys.platform.startswith("linux")
 IS_MAC = (not IS_WIN) and (not IS_LINUX)
 HOME = os.path.expanduser("~")
 APP_NAME = "Buddy 切号器"
-APP_VERSION = "2.2.18"
+APP_VERSION = "2.2.19"
 UI_FONT = "Microsoft YaHei UI" if IS_WIN else "PingFang SC"
 MONO_FONT = "Consolas" if IS_WIN else "Menlo"
 
@@ -1115,8 +1115,7 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None,
         if workbuddy_installed():
             lines.append("WorkBuddy：已切换（有效期至 %s）" % fmt_ts(exp))
         else:
-            lines.append("WorkBuddy：本机未检测到客户端，登录文件已写入"
-                         "（装好客户端启动即生效）")
+            lines.append("WorkBuddy：本机未检测到，已写入登录文件（装好后启动生效）")
         if exp and exp < int(time.time() * 1000):
             lines.append("注意：该账号 token 已过期，启动后可能需要重新登录。")
         if template and account_uid(template) == uid:
@@ -1125,17 +1124,17 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None,
         lines.append("WorkBuddy：未切换（已设置为只切 CodeBuddy IDE）。")
 
     if do_ide:
-        say("同步 CodeBuddy IDE 登录…")
+        say("写入 CodeBuddy IDE 登录…")
         try:
             inject_ide(doc, progress)
-            lines.append("CodeBuddy IDE：已同步")
+            lines.append("CodeBuddy IDE：已切换（有效期至 %s）" % fmt_ts(exp))
         except Exception as e:  # noqa: BLE001
             log("IDE 同步失败：%s" % e)
-            lines.append("CodeBuddy IDE：未同步（%s）" % str(e).splitlines()[0][:80])
+            lines.append("CodeBuddy IDE：未切换（%s）" % str(e).splitlines()[0][:80])
     elif ide_installed:
-        lines.append("CodeBuddy IDE：跳过（已设置为只切 WorkBuddy）")
+        lines.append("CodeBuddy IDE：已跳过（设置为只切 WorkBuddy）")
     else:
-        lines.append("CodeBuddy IDE：本机未检测到 IDE，未同步")
+        lines.append("CodeBuddy IDE：本机未检测到，已跳过")
 
     if restart and was_running:
         say("重启客户端…")
