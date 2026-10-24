@@ -49,22 +49,46 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          TR="$(python -c 'import PySide6,os;print(os.path.join(os.path.dirname(PySide6.__file__),"Qt","translations"))')"
+          QM_ARGS="$(python - <<'PY'
+import os
+import glob
+
+import PySide6
+base = os.path.dirname(PySide6.__file__)
+sep = ';' if os.name == 'nt' else ':'
+args = []
+for qm in ('qtbase_zh_CN.qm', 'qt_zh_CN.qm'):
+    hits = glob.glob(os.path.join(base, '**', qm), recursive=True)
+    if hits:
+        args.append('--add-data "%s%stranslations"' % (hits[0], sep))
+print(' '.join(args))
+PY
+)"
           pyinstaller --noconfirm --clean --onedir --windowed --name BuddySwitcher \
             --icon assets/icon.ico \
-            --add-data "assets/icon_1024.png;assets" \
-            --add-data "$TR/qtbase_zh_CN.qm;translations" \
-            --add-data "$TR/qt_zh_CN.qm;translations" buddy_switch.py
+            --add-data "assets/icon_1024.png;assets" $QM_ARGS buddy_switch.py
           7z a BuddySwitcher-Windows.zip ./dist/BuddySwitcher
 
       - name: Build (Linux binary + tar.gz)
         if: runner.os == 'Linux'
         run: |
-          TR="$(python -c 'import PySide6,os;print(os.path.join(os.path.dirname(PySide6.__file__),"Qt","translations"))')"
+          QM_ARGS="$(python - <<'PY'
+import os
+import glob
+
+import PySide6
+base = os.path.dirname(PySide6.__file__)
+sep = ';' if os.name == 'nt' else ':'
+args = []
+for qm in ('qtbase_zh_CN.qm', 'qt_zh_CN.qm'):
+    hits = glob.glob(os.path.join(base, '**', qm), recursive=True)
+    if hits:
+        args.append('--add-data "%s%stranslations"' % (hits[0], sep))
+print(' '.join(args))
+PY
+)"
           pyinstaller --noconfirm --clean --onedir --name BuddySwitcher \
-            --add-data "assets/icon_1024.png:assets" \
-            --add-data "$TR/qtbase_zh_CN.qm:translations" \
-            --add-data "$TR/qt_zh_CN.qm:translations" buddy_switch.py
+            --add-data "assets/icon_1024.png:assets" $QM_ARGS buddy_switch.py
           tar -czf BuddySwitcher-Linux-x86_64.tar.gz -C dist BuddySwitcher
           ./dist/BuddySwitcher/BuddySwitcher --help >/dev/null
 
