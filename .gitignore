@@ -12,6 +12,7 @@ __pycache__/
 build/
 dist/
 *.spec
+!scripts/*.spec
 
 # 系统与本地工具
 .DS_Store

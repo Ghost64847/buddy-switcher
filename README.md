@@ -24,7 +24,7 @@ WorkBuddy / CodeBuddy 多账号一键切换工具，支持 **macOS**、**Windows
 | 平台 | 文件 | 说明 |
 |---|---|---|
 | macOS（Apple Silicon） | `BuddySwitcher-macOS.dmg` | 打开后把应用拖进「应用程序」文件夹（首次打开右键 → 打开） |
-| Windows 10/11 | `BuddySwitcher-Windows.zip` | 解压运行 `BuddySwitcher.exe`（SmartScreen 提示时选「仍要运行」） |
+| Windows 10/11 | `BuddySwitcher.exe` | 单文件，下载后直接双击运行（SmartScreen 提示时选「仍要运行」） |
 | Linux x86_64 | `BuddySwitcher-Linux-x86_64.tar.gz` | 解压后运行 `./BuddySwitcher`（需 glibc 2.28+ 桌面环境） |
 
 macOS 首次同步 IDE 登录会弹**钥匙串授权框**，点「始终允许」即可（之后不再弹）。

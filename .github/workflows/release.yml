@@ -51,26 +51,11 @@ jobs:
           bash scripts/package_macos.sh
           cp dist/BuddySwitcher-macOS.dmg BuddySwitcher-macOS.dmg
 
-      - name: Build (Windows exe + zip)
+      - name: Build (Windows exe)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          QM_ARGS="$(python -c "
-          import glob
-          import os
-          import PySide6
-          base = os.path.dirname(PySide6.__file__)
-          sep = ';' if os.name == 'nt' else ':'
-          files = []
-          for qm in ('qtbase_zh_CN.qm', 'qt_zh_CN.qm'):
-              files += glob.glob(os.path.join(base, '**', qm), recursive=True)[:1]
-          print(' '.join('--add-data ' + f + sep + 'translations' for f in files))
-          ")"
-          pyinstaller --noconfirm --clean --onedir --windowed --name BuddySwitcher \
-            --icon assets/icon.ico \
-            --add-data "assets/icon_1024.png;assets" $QM_ARGS buddy_switch.py
-          python scripts/prune_qt.py dist/BuddySwitcher
-          7z a BuddySwitcher-Windows.zip ./dist/BuddySwitcher
+          pyinstaller --noconfirm --clean scripts/BuddySwitcher-Windows.spec
 
       - name: Build (Linux binary + tar.gz)
         if: runner.os == 'Linux'
@@ -97,7 +82,7 @@ jobs:
           name: BuddySwitcher-${{ matrix.os_name }}
           path: |
             BuddySwitcher-macOS.dmg
-            BuddySwitcher-Windows.zip
+            dist/BuddySwitcher.exe
             BuddySwitcher-Linux-x86_64.tar.gz
 
   release:
@@ -114,6 +99,6 @@ jobs:
         with:
           files: |
             out/BuddySwitcher-macOS.dmg
-            out/BuddySwitcher-Windows.zip
+            out/BuddySwitcher.exe
             out/BuddySwitcher-Linux-x86_64.tar.gz
           generate_release_notes: true
