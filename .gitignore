@@ -1,0 +1,21 @@
+# 用户数据（含 token，绝不入库）
+profiles/
+backups/
+logs/
+config.json
+
+# Python
+__pycache__/
+*.pyc
+
+# 打包产物
+build/
+dist/
+*.spec
+
+# 系统与本地工具
+.DS_Store
+.mimosa/
+
+# 本地构建产物
+*.dmg

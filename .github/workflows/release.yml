@@ -1,0 +1,72 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            os_name: macOS
+          - os: windows-latest
+            os_name: Windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Run self tests
+        run: python tests/selftest.py
+
+      - name: Build (macOS app + dmg)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name "Buddy Switcher" buddy_switch.py
+          codesign --force --deep -s - "dist/Buddy Switcher.app"
+          hdiutil create -volname "Buddy Switcher" -srcfolder "dist/Buddy Switcher.app" -ov -format UDZO BuddySwitcher-macOS.dmg
+
+      - name: Build (Windows exe + zip)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name BuddySwitcher buddy_switch.py
+          7z a BuddySwitcher-Windows.zip ./dist/BuddySwitcher.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BuddySwitcher-${{ matrix.os_name }}
+          path: |
+            BuddySwitcher-macOS.dmg
+            BuddySwitcher-Windows.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/BuddySwitcher-macOS.dmg
+            out/BuddySwitcher-Windows.zip
+          generate_release_notes: true
