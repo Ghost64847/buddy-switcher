@@ -198,37 +198,6 @@ def run():
     table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
     table.setStyleSheet("QTableWidget {background: transparent; border: none;}")
     # 表头不加任何样式表覆盖：保留 Aqua 原生样式（含访达式的列分隔竖线）
-    table.setHorizontalScrollBarPolicy(QT.ScrollBarAlwaysOff)  # 列宽总和不出窗口
-    _clamping = {"on": False}
-
-    def clamp_columns(sec=None, _old=None, _new=None):
-        """访达式列宽：列宽总和永远等于视口宽（不出现横向滚动）。
-        拖宽某一列时先把右侧各列压到最小，之后顶住拖不动；
-        窗口变窄时压缩最宽的列。"""
-        if _clamping["on"]:
-            return
-        _clamping["on"] = True
-        view_w = table.viewport().width()
-        ncols = table.columnCount()
-        last = ncols - 1
-        widths = [table.columnWidth(c) for c in range(ncols)]
-        overflow = sum(widths) - view_w
-        if overflow > 0:
-            if sec is not None and sec != last and widths[sec] - 40 >= overflow:
-                # 用户正在拖这一列：把它顶回极限位置，不动其他列
-                table.setColumnWidth(sec, widths[sec] - overflow)
-            else:
-                for c in sorted(range(last), key=lambda i: widths[i],
-                                reverse=True):
-                    cut = min(widths[c] - 40, overflow)
-                    if cut > 0:
-                        table.setColumnWidth(c, widths[c] - cut)
-                        overflow -= cut
-                    if overflow <= 0:
-                        break
-        _clamping["on"] = False
-
-    header.sectionResized.connect(clamp_columns)
 
     log = QtWidgets.QPlainTextEdit()
     log.setReadOnly(True)
