@@ -71,7 +71,61 @@ def run():
         if icon_path:
             app.setWindowIcon(QtGui.QIcon(icon_path))
 
-    win = QtWidgets.QMainWindow()
+    class RoundedSelDelegate(QtWidgets.QStyledItemDelegate):
+        """访达式圆角选中：把默认的方形高亮画成圆角矩形"""
+
+        def paint(self, painter, option, index):
+            from PySide6 import QtGui
+            opt = QtWidgets.QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            state = opt.state
+            if state & QtWidgets.QStyle.State_Selected:
+                painter.save()
+                painter.setRenderHint(QtGui.QPainter.Antialiasing)
+                painter.setPen(QT.NoPen)
+                painter.setBrush(opt.palette.highlight())
+                painter.drawRoundedRect(opt.rect.adjusted(1, 1, -1, -1), 6, 6)
+                painter.restore()
+                # 去掉选中态，避免再画一层方形高亮；文字改用高亮前景色
+                opt.state &= ~QtWidgets.QStyle.State_Selected
+                opt.palette.setColor(opt.palette.Text,
+                                     opt.palette.highlightedText().color())
+            opt.state &= ~QtWidgets.QStyle.State_HasFocus
+            QtWidgets.QApplication.style().drawControl(
+                QtWidgets.QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+
+    class MainWindow(QtWidgets.QMainWindow):
+        """主窗口：支持把 json 拖进窗口导入；双击文件用本应用打开时导入"""
+
+        files_dropped = QtCore.Signal(list)
+
+        def __init__(self):
+            super().__init__()
+            self.setAcceptDrops(True)
+            self.open_files_cb = None  # 外部注入：list[str] -> None
+
+        def dragEnterEvent(self, event):
+            if event.mimeData().hasUrls() and any(
+                    u.isLocalFile() for u in event.mimeData().urls()):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+
+        def dropEvent(self, event):
+            paths = [u.toLocalFile() for u in event.mimeData().urls()
+                     if u.isLocalFile()]
+            if paths:
+                self.files_dropped.emit(paths)
+                event.acceptProposedAction()
+
+        def event(self, e):
+            if e.type() == QtCore.QEvent.FileOpen and hasattr(e, "file"):
+                if self.open_files_cb and e.file():
+                    self.open_files_cb([e.file()])
+                return True
+            return super().event(e)
+
+    win = MainWindow()
     win.setWindowTitle(bs.APP_NAME)
     win.resize(820, 560)
     win.setMinimumSize(660, 460)
@@ -115,11 +169,13 @@ def run():
     table.setAlternatingRowColors(True)
     table.setShowGrid(False)  # 苹果列表风格：不画网格线
     table.setContextMenuPolicy(QT.CustomContextMenu)
+    table.setItemDelegate(RoundedSelDelegate(table))  # 访达式圆角选中
     table.verticalHeader().setVisible(False)
     header = table.horizontalHeader()
     header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
     header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)  # UID 占满剩余宽
     header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+    header.setSectionsMovable(True)  # 像访达一样拖动表头左右换列
     table.setColumnWidth(0, 250)
     table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
     table.setStyleSheet("QTableWidget {background: transparent; border: none;}"
@@ -130,16 +186,17 @@ def run():
     log.setReadOnly(True)
     log.setMaximumBlockCount(2000)
     log.setMinimumHeight(96)
-    log.setStyleSheet("QPlainTextEdit {background: palette(base); border: none;"
-                      "border-radius: 10px;}")
+    log.setStyleSheet("QPlainTextEdit {background: transparent; border: none;}")
 
-    def make_card(inner):
-        """macOS 官方圆角卡片：系统底色 + 细描边 + 圆角，深浅色跟随系统"""
+    def make_card(inner, rounded=True, window_bg=False):
+        """卡片容器：列表用直角，日志用圆角；底色可区别于列表（VS Code 面板式）"""
         card = QtWidgets.QFrame()
-        card.setObjectName("roundedCard")
+        card.setObjectName("squareCard" if not rounded else "panelCard")
+        role = "palette(window)" if window_bg else "palette(base)"
         card.setStyleSheet(
-            "QFrame#roundedCard {background: palette(base);"
-            "border: 1px solid palette(mid); border-radius: 10px;}")
+            "QFrame#squareCard {background: %s; border: 1px solid palette(mid);}"
+            "QFrame#panelCard {background: %s; border: 1px solid palette(mid);"
+            " border-radius: 10px;}" % (role, role))
         lay = QtWidgets.QVBoxLayout(card)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
@@ -147,8 +204,8 @@ def run():
         return card
 
     splitter = VSplitter(QT.Vertical)
-    splitter.addWidget(make_card(table))
-    log_card = make_card(log)
+    splitter.addWidget(make_card(table, rounded=False))
+    log_card = make_card(log, rounded=True, window_bg=True)
     log_card.layout().setContentsMargins(6, 6, 6, 6)
     splitter.addWidget(log_card)
     splitter.setStretchFactor(0, 3)
@@ -306,8 +363,7 @@ def run():
         def on_ok(lines):
             for line in lines[1:]:
                 append_log(line)
-            append_log(lines[0])
-            set_status("✓ " + lines[0])
+            set_status("✓ " + lines[0])  # 标题只记一次（set_status 会进日志）
             refresh([uid])
             if any(l.startswith("已重启") for l in lines[1:]):
                 append_log("客户端重启 2 分钟后自动归档刷新后的登录…")
@@ -324,22 +380,23 @@ def run():
             return  # 按住 Ctrl / Command 操作多选时的双击，不当作切换
         rows = selected_rows()
         if not rows:
-            set_status("请先在列表里选择一个账号")
+            QtWidgets.QMessageBox.information(win, bs.APP_NAME, "请先在列表里选择一个账号")
             return
         if len(rows) > 1:
-            set_status("选中了多个账号，请只选一个再切换")
+            QtWidgets.QMessageBox.information(
+                win, bs.APP_NAME, "选中了多个账号，请只选一个再切换")
             return
         doc = doc_of_row(rows[0])
         if doc:
             do_switch(doc)
 
-    def on_import(checked=False):
+    def import_files(paths):
+        """批量导入一组 json（对话框多选 / 拖拽 / 双击文件打开共用）"""
         if busy["value"]:
             return
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            win, "选择一个或多个 workbuddy-<uid>.json", "",
-            "JSON 文件 (*.json);;所有文件 (*)")
+        paths = [p for p in paths if p.lower().endswith(".json")]
         if not paths:
+            set_status("没有可导入的 JSON 文件")
             return
         done_uids = []
         for path in paths:
@@ -349,12 +406,24 @@ def run():
                 append_log("导入失败 %s：%s" % (os.path.basename(path), e))
                 continue
             done_uids.append(bs.account_uid(doc))
-            append_log("已导入：%s（%s）" % (bs.account_label(doc), bs.account_uid(doc)))
+            append_log("已导入：%s（%s）" % (bs.account_label(doc),
+                                           bs.account_uid(doc)))
         refresh(done_uids)
         if done_uids:
             set_status("已导入 %d 个账号，双击列表即可切换" % len(done_uids))
         else:
             set_status("导入失败，详见日志")
+
+    win.open_files_cb = import_files
+
+    def on_import(checked=False):
+        if busy["value"]:
+            return
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            win, "选择一个或多个 workbuddy-<uid>.json（可按住 Command 多选）", "",
+            "JSON 文件 (*.json);;所有文件 (*)")
+        if paths:
+            import_files(paths)
 
     def on_capture(checked=False):
         """保存选中账号：当前登录的账号才有新数据（客户端续期后的 token）"""
@@ -560,6 +629,7 @@ def run():
         lay = QtWidgets.QVBoxLayout(dlg)
         lb = QtWidgets.QListWidget()
         lb.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        lb.setItemDelegate(RoundedSelDelegate(lb))  # 访达式圆角选中
         lay.addWidget(lb)
 
         def reload_list():
@@ -724,6 +794,7 @@ def run():
     btn_restore.clicked.connect(on_restore)
     btn_settings.clicked.connect(on_settings)
     btn_log.clicked.connect(toggle_log)
+    win.files_dropped.connect(import_files)  # 拖 json 进窗口即导入
 
     # 定时刷新当前账号归档
     auto_timer = QtCore.QTimer(win)
