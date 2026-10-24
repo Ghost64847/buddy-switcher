@@ -49,15 +49,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --name BuddySwitcher buddy_switch.py
-          7z a BuddySwitcher-Windows.zip ./dist/BuddySwitcher.exe
+          pyinstaller --noconfirm --clean --onedir --windowed --name BuddySwitcher \
+            --icon assets/icon.ico \
+            --add-data "assets/icon_1024.png;assets" buddy_switch.py
+          7z a BuddySwitcher-Windows.zip ./dist/BuddySwitcher
 
       - name: Build (Linux binary + tar.gz)
         if: runner.os == 'Linux'
         run: |
-          pyinstaller --noconfirm --clean --onefile --name BuddySwitcher buddy_switch.py
+          pyinstaller --noconfirm --clean --onedir --name BuddySwitcher \
+            --add-data "assets/icon_1024.png:assets" buddy_switch.py
           tar -czf BuddySwitcher-Linux-x86_64.tar.gz -C dist BuddySwitcher
-          ./dist/BuddySwitcher --help >/dev/null
+          ./dist/BuddySwitcher/BuddySwitcher --help >/dev/null
 
       - uses: actions/upload-artifact@v4
         with:

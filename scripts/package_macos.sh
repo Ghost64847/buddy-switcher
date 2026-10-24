@@ -9,7 +9,11 @@ DMG="dist/BuddySwitcher-macOS.dmg"
 PY=python3
 command -v python3 >/dev/null 2>&1 || PY=python
 
-"$PY" -m PyInstaller --noconfirm --clean --windowed --name "$APP_NAME" buddy_switch.py
+ICON_ARGS=""
+[ -f assets/icon.icns ] && ICON_ARGS="--icon assets/icon.icns --add-data assets/icon_1024.png:assets"
+
+"$PY" -m PyInstaller --noconfirm --clean --windowed --name "$APP_NAME" \
+    $ICON_ARGS buddy_switch.py
 
 # 中文化：让访达/系统弹窗跟随系统语言显示中文（未声明本地化的 app 默认英文）
 "$PY" - <<'EOF'

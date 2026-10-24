@@ -134,6 +134,7 @@ class LabelTest(unittest.TestCase):
             "13911112222")
         self.assertIsNone(bs._extract_session_name({"account": {}}))
 
+
     def test_plaintext_nickname_wins(self):
         self.assertEqual(bs.account_label(fake_doc()), "测试账号 / 138****0000")
 
@@ -150,6 +151,31 @@ class LabelTest(unittest.TestCase):
         doc["account"]["phoneNumber"] = {"$wbEncrypted": 1}
         doc["auth"]["accessToken"] = {"$wbEncrypted": 1}
         self.assertEqual(bs.account_label(doc), "账号 u123")
+
+
+class ScopeConfigTest(unittest.TestCase):
+    def setUp(self):
+        self._old_config = bs.CONFIG
+        self.tmp = tempfile.mkdtemp(prefix="buddyscope-")
+        bs.CONFIG = safe_join(self.tmp, "config.json")
+
+    def tearDown(self):
+        bs.CONFIG = self._old_config
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_default_scope_is_both(self):
+        self.assertEqual(bs.load_config()["switch_scope"], "both")
+
+    def test_legacy_switch_ide_false_migrates_to_workbuddy(self):
+        Path(bs.CONFIG).write_text(
+            json.dumps({"switch_ide": False}), encoding="utf-8")
+        self.assertEqual(bs.load_config()["switch_scope"], "workbuddy")
+
+    def test_explicit_scope_wins(self):
+        Path(bs.CONFIG).write_text(
+            json.dumps({"switch_scope": "ide", "switch_ide": True}),
+            encoding="utf-8")
+        self.assertEqual(bs.load_config()["switch_scope"], "ide")
 
 
 class CaptureMergeTest(unittest.TestCase):

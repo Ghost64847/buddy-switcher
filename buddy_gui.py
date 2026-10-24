@@ -17,6 +17,20 @@ from pathlib import Path
 import buddy_switch as bs
 
 
+def _resource_path(rel: str):
+    """找打包内/源码目录里的资源文件（图标等）"""
+    bases = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        bases.append(Path(meipass))
+    bases.append(Path(__file__).resolve().parent.parent)
+    for base in bases:
+        p = base / rel
+        if p.exists():
+            return str(p)
+    return None
+
+
 def run():
     try:
         from PySide6 import QtCore, QtGui, QtWidgets
@@ -52,16 +66,20 @@ def run():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName(bs.APP_NAME)
     app.setOrganizationName("BuddySwitch")
+    if not bs.IS_MAC:  # macOS 用 .app 包里的图标；其余平台设置窗口图标
+        icon_path = _resource_path("assets/icon_1024.png")
+        if icon_path:
+            app.setWindowIcon(QtGui.QIcon(icon_path))
 
     win = QtWidgets.QMainWindow()
     win.setWindowTitle(bs.APP_NAME)
-    win.resize(800, 560)
+    win.resize(820, 560)
     win.setMinimumSize(660, 460)
 
     central = QtWidgets.QWidget()
     layout = QtWidgets.QVBoxLayout(central)
-    layout.setContentsMargins(14, 10, 14, 6)
-    layout.setSpacing(8)
+    layout.setContentsMargins(16, 12, 16, 8)
+    layout.setSpacing(10)
 
     current_label = QtWidgets.QLabel("读取中…")
     layout.addWidget(current_label)
@@ -72,12 +90,13 @@ def run():
     table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
     table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
     table.setAlternatingRowColors(True)
+    table.setShowGrid(False)  # 苹果列表风格：不画网格线
     table.setContextMenuPolicy(QT.CustomContextMenu)
     table.verticalHeader().setVisible(False)
     table.horizontalHeader().setStretchLastSection(True)
-    table.setColumnWidth(0, 260)
+    table.setColumnWidth(0, 270)
     table.setColumnWidth(1, 250)
-    table.verticalHeader().setDefaultSectionSize(30)
+    table.verticalHeader().setDefaultSectionSize(32)
 
     log = QtWidgets.QPlainTextEdit()
     log.setReadOnly(True)
@@ -93,19 +112,18 @@ def run():
     splitter.setCollapsible(1, False)
     layout.addWidget(splitter, 1)
 
-    bar = QtWidgets.QHBoxLayout()
-    btn_import = QtWidgets.QPushButton("导入账号…")
-    btn_capture = QtWidgets.QPushButton("保存选中账号")
-    btn_export = QtWidgets.QPushButton("导出账号…")
-    btn_restore = QtWidgets.QPushButton("恢复备份…")
-    btn_switch = QtWidgets.QPushButton("切换账号")
-    for b in (btn_import, btn_capture, btn_export, btn_restore):
-        bar.addWidget(b)
-    bar.addStretch(1)
-    bar.addWidget(btn_switch)
-    layout.addLayout(bar)
-
     win.setCentralWidget(central)
+
+    # 原生工具栏（macOS 上与标题栏融为一体，其余平台在菜单栏下方）
+    toolbar = QtWidgets.QToolBar("主工具栏")
+    toolbar.setMovable(False)
+    toolbar.setToolButtonStyle(QT.ToolButtonTextOnly)
+    win.addToolBar(QT.TopToolBarArea, toolbar)
+    if bs.IS_MAC:
+        try:
+            win.setUnifiedTitleAndToolBarOnMac(True)
+        except AttributeError:
+            pass  # 个别 Qt 版本没有该接口，退回普通工具栏
 
     status_label = QtWidgets.QLabel("就绪")
     btn_settings = QtWidgets.QPushButton("设置…")
@@ -116,8 +134,6 @@ def run():
     status.addPermanentWidget(btn_log)
 
     busy = {"value": False}
-    buttons = [btn_switch, btn_import, btn_capture, btn_export, btn_restore,
-               btn_settings, btn_log]
     log_hidden = {"value": False}
 
     def append_log(msg):
@@ -128,8 +144,6 @@ def run():
 
     def set_busy(flag):
         busy["value"] = flag
-        for b in buttons:
-            b.setEnabled(not flag)
 
     def profile_map():
         return {p["path"]: p for p in bs.list_profiles()}
@@ -439,10 +453,14 @@ def run():
         idx = next((i for i, (_, m) in enumerate(INTERVALS) if m == minutes), 1)
         interval.setCurrentIndex(idx)
         restart_chk = QtWidgets.QCheckBox("切换后自动重启客户端")
-        ide_chk = QtWidgets.QCheckBox("同步切换 CodeBuddy IDE 登录")
         auto_chk.setChecked(bool(cfg.get("auto_refresh", True)))
         restart_chk.setChecked(bool(cfg.get("restart_after_switch", True)))
-        ide_chk.setChecked(bool(cfg.get("switch_ide", True)))
+        scope_box = QtWidgets.QComboBox()
+        scope_box.addItems([lbl for lbl, _ in bs.SCOPE_LABELS])
+        scope_now = cfg.get("switch_scope", "both")
+        scope_idx = next((i for i, (_, v) in enumerate(bs.SCOPE_LABELS)
+                          if v == scope_now), 0)
+        scope_box.setCurrentIndex(scope_idx)
         form.addRow(auto_chk)
         box_row = QtWidgets.QWidget()
         box_lay = QtWidgets.QHBoxLayout(box_row)
@@ -451,8 +469,14 @@ def run():
         box_lay.addWidget(interval)
         box_lay.addStretch(1)
         form.addRow(box_row)
+        scope_row = QtWidgets.QWidget()
+        scope_lay = QtWidgets.QHBoxLayout(scope_row)
+        scope_lay.setContentsMargins(20, 0, 0, 0)
+        scope_lay.addWidget(QtWidgets.QLabel("切换范围："))
+        scope_lay.addWidget(scope_box)
+        scope_lay.addStretch(1)
+        form.addRow(scope_row)
         form.addRow(restart_chk)
-        form.addRow(ide_chk)
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
@@ -463,7 +487,7 @@ def run():
         cfg["auto_refresh"] = auto_chk.isChecked()
         cfg["auto_refresh_minutes"] = INTERVALS[interval.currentIndex()][1]
         cfg["restart_after_switch"] = restart_chk.isChecked()
-        cfg["switch_ide"] = ide_chk.isChecked()
+        cfg["switch_scope"] = bs.SCOPE_LABELS[scope_box.currentIndex()][1]
         bs.save_config(cfg)
         schedule_auto()
         set_status("设置已保存")
@@ -602,11 +626,27 @@ def run():
     m_view.addAction("设置…", on_settings,
                      QtGui.QKeySequence.StandardKey.Preferences)
 
-    btn_switch.clicked.connect(on_switch)
-    btn_import.clicked.connect(on_import)
-    btn_capture.clicked.connect(on_capture)
-    btn_export.clicked.connect(on_export)
-    btn_restore.clicked.connect(on_restore)
+    # 工具栏动作（替代底部按钮行）
+    act_import_tb = QtGui.QAction("导入账号…", win)
+    act_import_tb.triggered.connect(on_import)
+    act_capture_tb = QtGui.QAction("保存选中账号", win)
+    act_capture_tb.triggered.connect(on_capture)
+    act_export_tb = QtGui.QAction("导出账号…", win)
+    act_export_tb.triggered.connect(on_export)
+    act_restore_tb = QtGui.QAction("恢复备份…", win)
+    act_restore_tb.triggered.connect(on_restore)
+    toolbar.addAction(act_import_tb)
+    toolbar.addAction(act_capture_tb)
+    toolbar.addAction(act_export_tb)
+    toolbar.addAction(act_restore_tb)
+    spacer = QtWidgets.QWidget()
+    spacer.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                         QtWidgets.QSizePolicy.Preferred)
+    toolbar.addWidget(spacer)
+    act_switch_tb = QtGui.QAction("切换账号", win)
+    act_switch_tb.triggered.connect(on_switch)
+    toolbar.addAction(act_switch_tb)
+
     btn_settings.clicked.connect(on_settings)
     btn_log.clicked.connect(toggle_log)
 

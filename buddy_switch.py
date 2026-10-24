@@ -86,10 +86,13 @@ else:
         {"name": "WorkBuddy", "path": "/Applications/WorkBuddy.app"},
     ]
 
-# 高级选项（config.json 可覆盖）：restart_after_switch / switch_ide /
-# auto_refresh / auto_refresh_minutes / auth_file / ide_db / apps
-DEFAULT_CONFIG = {"restart_after_switch": True, "switch_ide": True,
+# 高级选项（config.json 可覆盖）：switch_scope（both/workbuddy/ide）/
+# restart_after_switch / auto_refresh / auto_refresh_minutes /
+# auth_file / ide_db / apps
+DEFAULT_CONFIG = {"switch_scope": "both", "restart_after_switch": True,
                   "auto_refresh": True, "auto_refresh_minutes": 60}
+SCOPE_LABELS = [("两个都切换", "both"), ("只切 WorkBuddy", "workbuddy"),
+                ("只切 CodeBuddy IDE", "ide")]
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -143,8 +146,12 @@ def load_config():
             cfg = json.load(f)
     except (OSError, ValueError):
         cfg = {}
+    cfg = cfg if isinstance(cfg, dict) else {}
     out = dict(DEFAULT_CONFIG)
-    out.update(cfg if isinstance(cfg, dict) else {})
+    out.update(cfg)
+    # 旧版配置迁移：switch_ide=False 相当于「只切 WorkBuddy」
+    if "switch_scope" not in cfg and cfg.get("switch_ide") is False:
+        out["switch_scope"] = "workbuddy"
     return out
 
 
@@ -1020,8 +1027,11 @@ def _wait_file_stable(path, timeout=3.0):
 
 # ---------------------------------------------------------------- 切号
 
-def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None):
-    """执行切换。返回结果行列表，第一行是标题；失败抛异常。"""
+def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None,
+              do_wb=None, do_ide=None):
+    """执行切换。返回结果行列表，第一行是标题；失败抛异常。
+    切换范围由配置 switch_scope 决定（both / workbuddy / ide），
+    do_wb / do_ide / switch_ide 可显式覆盖（命令行用）。"""
     def say(msg):
         log(msg)
         if progress:
@@ -1034,8 +1044,15 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None):
     cfg = load_config()
     if restart is None:
         restart = cfg.get("restart_after_switch", True)
-    if switch_ide is None:
-        switch_ide = cfg.get("switch_ide", True) and ide_available()
+    scope = cfg.get("switch_scope", "both")
+    if do_wb is None:
+        do_wb = (scope != "ide") if switch_ide is None else True
+    if do_ide is None:
+        if switch_ide is not None:
+            do_ide = switch_ide
+        else:
+            do_ide = scope != "workbuddy"
+        do_ide = do_ide and ide_available()
 
     uid = account_uid(doc)
     label = account_label(doc)
@@ -1047,7 +1064,8 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None):
         return ["预览：将切换到 %s（%s）" % (label, uid),
                 "有效期至：%s%s" % (fmt_ts(exp),
                                     "（已过期）" if exp and exp < int(time.time() * 1000) else ""),
-                "WorkBuddy：切换；CodeBuddy IDE：%s" % ("同步" if switch_ide else "跳过")]
+                "WorkBuddy：%s；CodeBuddy IDE：%s"
+                % ("切换" if do_wb else "不动", "同步" if do_ide else "跳过")]
 
     say("退出客户端…")
     quit_all(progress)
@@ -1056,21 +1074,24 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None):
     backup_current("before-" + uid[:8])
     _wait_file_stable(TARGET)
 
-    say("写入 WorkBuddy 登录…")
-    merged = make_doc(doc, read_info())
-    write_info(merged)
-    check = read_info()
-    if account_uid(check) != uid:
-        raise RuntimeError("写入后校验失败，登录文件里的账号不是目标账号。请用「恢复备份」还原。")
+    lines = ["已切换为 %s" % label]
+    if do_wb:
+        say("写入 WorkBuddy 登录…")
+        merged = make_doc(doc, read_info())
+        write_info(merged)
+        check = read_info()
+        if account_uid(check) != uid:
+            raise RuntimeError("写入后校验失败，登录文件里的账号不是目标账号。"
+                               "请用「恢复备份」还原。")
+        lines.append("WorkBuddy：已切换（有效期至 %s）" % fmt_ts(exp))
+        if exp and exp < int(time.time() * 1000):
+            lines.append("注意：该账号 token 已过期，启动后可能需要重新登录。")
+        if template and account_uid(template) == uid:
+            lines.append("提示：切换前登录文件已是该账号。")
+    else:
+        lines.append("WorkBuddy：未切换（已设置为只切 CodeBuddy IDE）。")
 
-    lines = ["已切换为 %s" % label,
-             "WorkBuddy：已切换（有效期至 %s）" % fmt_ts(exp)]
-    if exp and exp < int(time.time() * 1000):
-        lines.append("注意：该账号 token 已过期，启动后可能需要重新登录。")
-    if template and account_uid(template) == uid:
-        lines.append("提示：切换前登录文件已是该账号。")
-
-    if switch_ide:
+    if do_ide:
         say("同步 CodeBuddy IDE 登录…")
         try:
             inject_ide(doc, progress)
@@ -1079,7 +1100,7 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None):
             log("IDE 同步失败：%s" % e)
             lines.append("CodeBuddy IDE：未同步（%s）" % str(e).splitlines()[0][:80])
     else:
-        lines.append("CodeBuddy IDE：跳过（未安装或已在配置中关闭）")
+        lines.append("CodeBuddy IDE：跳过（未安装或已设置为只切 WorkBuddy）")
 
     if restart and was_running:
         say("重启客户端…")
@@ -1222,7 +1243,7 @@ def cli(argv):
               "  buddy_switch.py current               # 当前登录\n"
               "  buddy_switch.py import <file.json>    # 导入账号\n"
               "  buddy_switch.py capture               # 保存当前账号\n"
-              "  buddy_switch.py switch <uid|file> [--no-restart] [--no-ide] [--dry-run]\n"
+              "  buddy_switch.py switch <uid|file> [--no-restart] [--no-ide] [--no-wb] [--dry-run]\n"
               "  buddy_switch.py refresh <uid|file>        # 联网续期（需明文 token 档案）\n"
               "  buddy_switch.py backups               # 列出备份")
         return 0
@@ -1266,9 +1287,11 @@ def cli(argv):
             if doc is None:
                 print("找不到账号：%s" % key)
                 return 1
+        do_wb = False if "--no-wb" in argv else None
+        do_ide = False if "--no-ide" in argv else None
         for line in switch_to(doc,
                               restart=("--no-restart" not in argv),
-                              switch_ide=("--no-ide" not in argv),
+                              do_wb=do_wb, do_ide=do_ide,
                               dry_run=("--dry-run" in argv),
                               progress=print):
             print(line)
