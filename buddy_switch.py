@@ -38,7 +38,7 @@ IS_LINUX = (not IS_WIN) and (sys.platform.startswith("linux")
 IS_MAC = (not IS_WIN) and (not IS_LINUX)
 HOME = os.path.expanduser("~")
 APP_NAME = "Buddy 切号器"
-APP_VERSION = "2.2.17"
+APP_VERSION = "2.2.18"
 UI_FONT = "Microsoft YaHei UI" if IS_WIN else "PingFang SC"
 MONO_FONT = "Consolas" if IS_WIN else "Menlo"
 
@@ -1132,7 +1132,10 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None,
         except Exception as e:  # noqa: BLE001
             log("IDE 同步失败：%s" % e)
             lines.append("CodeBuddy IDE：未同步（%s）" % str(e).splitlines()[0][:80])
-    # 跳过 IDE（未安装 / 配置为只切 WorkBuddy）时不再输出说明，避免每次刷屏
+    elif ide_installed:
+        lines.append("CodeBuddy IDE：跳过（已设置为只切 WorkBuddy）")
+    else:
+        lines.append("CodeBuddy IDE：本机未检测到 IDE，未同步")
 
     if restart and was_running:
         say("重启客户端…")

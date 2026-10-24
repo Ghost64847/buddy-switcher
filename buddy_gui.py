@@ -450,7 +450,7 @@ def run():
                                            bs.account_uid(doc)))
         refresh(done_uids)
         if done_uids:
-            set_status("已导入 %d 个账号，双击列表即可切换" % len(done_uids))
+            set_status("已导入 %d 个账号，双击选项即可切换" % len(done_uids))
         else:
             set_status("导入失败，详见日志")
 
@@ -895,9 +895,8 @@ def run():
     refresh()
     table.resizeColumnToContents(1)  # UID 列初始按内容定宽（之后可拖边界调）
     append_log("数据目录：%s" % bs.STORE)
-    append_log("用法：双击列表切换；拖动或按住 Ctrl / Command 多选，"
+    append_log("用法：双击选项切换；拖动或按住 Ctrl / Command 多选，"
                "右键可刷新有效期、导出、删除。")
-    append_log("提示：首次同步 IDE 时如弹出钥匙串授权，请点「始终允许」。")
     schedule_auto()
     win.show()
     return app.exec()
