@@ -198,39 +198,13 @@ def run():
     table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
     table.setStyleSheet("QTableWidget {background: transparent; border: none;}")
     # 表头不加任何样式表覆盖：保留 Aqua 原生样式（含访达式的列分隔竖线）
-
-    class FullRowSelDelegate(QtWidgets.QStyledItemDelegate):
-        """Windows 用：整行一块系统色直角高亮（现代样式按单元格画会在
-        列分隔处断开）。每个选中的单元格都把整行蓝底补画一遍——局部
-        重绘（悬停/局部刷新）不会把某几列洗白；列表控件（无表头）的
-        单元格矩形就是整行，直接用。mac 原生整行绘制，不装这个。"""
-
-        def paint(self, painter, option, index):
-            opt = QtWidgets.QStyleOptionViewItem(option)
-            self.initStyleOption(opt, index)
-            if opt.state & QtWidgets.QStyle.State_Selected:
-                rect = opt.rect
-                view = opt.widget
-                hdr = (view.horizontalHeader()
-                       if isinstance(view, QtWidgets.QTableView) else None)
-                if hdr is not None and hdr.count() > 0:
-                    first = min(range(hdr.count()), key=hdr.visualIndex)
-                    last = max(range(hdr.count()), key=hdr.visualIndex)
-                    left = view.columnViewportPosition(first)
-                    right = (view.columnViewportPosition(last)
-                             + view.columnWidth(last))
-                    rect = QtCore.QRect(left, opt.rect.top(),
-                                        right - left, opt.rect.height())
-                painter.fillRect(rect, opt.palette.highlight())
-                opt.state &= ~QtWidgets.QStyle.State_Selected
-                opt.palette.setColor(QtGui.QPalette.ColorRole.Text,
-                                     opt.palette.highlightedText().color())
-            opt.state &= ~QtWidgets.QStyle.State_HasFocus
-            QtWidgets.QApplication.style().drawControl(
-                QtWidgets.QStyle.CE_ItemViewItem, opt, painter, opt.widget)
-
     if not bs.IS_MAC:
-        table.setItemDelegate(FullRowSelDelegate(table))
+        # Windows 现代样式按单元格画选中（圆角留缝，整行选中会在列分隔
+        # 处断开）；改用样式表平铺系统高亮色：相邻单元格同色无缝=整行蓝
+        table.setStyleSheet(
+            "QTableWidget {background: transparent; border: none;}"
+            "QTableWidget::item:selected {"
+            "background: palette(highlight); color: palette(highlighted-text);}")
 
     log = QtWidgets.QPlainTextEdit()
     log.setReadOnly(True)
@@ -690,7 +664,7 @@ def run():
         bs.save_config(cfg)
         apply_theme()
         schedule_auto()
-        # 保存成功不再写日志（点确定本身就是确认，多次改设置会刷屏）
+        set_status("设置已保存")  # 单条确认反馈（之前重复两条才是问题）
 
     def on_restore(checked=False):
         if busy["value"]:
@@ -706,7 +680,9 @@ def run():
         lb = QtWidgets.QListWidget()
         lb.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         if not bs.IS_MAC:
-            lb.setItemDelegate(FullRowSelDelegate(lb))  # 蓝色整行选中
+            lb.setStyleSheet(
+                "QListWidget::item:selected {"
+                "background: palette(highlight); color: palette(highlighted-text);}")
         lay.addWidget(lb)
 
         def reload_list():
