@@ -76,6 +76,11 @@ def run():
                                                    QT.ColorScheme.Unknown)
         try:
             app.styleHints().setColorScheme(scheme)  # Unknown = 跟随系统
+            # 样式表里的 palette() 引用不会随配色方案自动重算（卡片会留在旧色），
+            # 手动 unpolish/polish 全部控件强制重新取色
+            for w in QtWidgets.QApplication.allWidgets():
+                w.style().unpolish(w)
+                w.style().polish(w)
         except (AttributeError, RuntimeError):
             pass  # Qt < 6.8 没有该接口：只能跟随系统
 
@@ -546,7 +551,8 @@ def run():
         except OSError as e:
             QtWidgets.QMessageBox.critical(win, bs.APP_NAME, "导出失败：%s" % e)
             return
-        append_log("已导出 %d 个账号" % len(dests))
+        for dest, _ in dests:  # 逐个写明文件位置，方便核对
+            append_log("已导出：%s" % dest)
         set_status("已导出 %d 个账号" % len(dests))
 
     def on_delete(checked=False):
@@ -575,8 +581,7 @@ def run():
 
     INTERVALS = [("30 分钟", 30), ("1 小时", 60), ("3 小时", 180),
                  ("6 小时", 360), ("12 小时", 720), ("每天", 1440)]
-    THEMES = [("跟随系统（随 macOS 深浅色自动切换）", "auto"),
-              ("浅色", "light"), ("深色", "dark")]
+    THEMES = [("跟随系统", "auto"), ("浅色", "light"), ("深色", "dark")]
 
     def on_settings(checked=False):
         if busy["value"]:
@@ -605,6 +610,7 @@ def run():
         theme_idx = next((i for i, (_, v) in enumerate(THEMES)
                           if v == cfg.get("theme", "auto")), 0)
         theme_box.setCurrentIndex(theme_idx)
+        form.addRow(restart_chk)
         form.addRow(auto_chk)
         box_row = QtWidgets.QWidget()
         box_lay = QtWidgets.QHBoxLayout(box_row)
@@ -627,7 +633,6 @@ def run():
         scope_lay.addWidget(scope_box)
         scope_lay.addStretch(1)
         form.addRow(scope_row)
-        form.addRow(restart_chk)
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
