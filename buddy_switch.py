@@ -38,9 +38,7 @@ IS_LINUX = (not IS_WIN) and (sys.platform.startswith("linux")
 IS_MAC = (not IS_WIN) and (not IS_LINUX)
 HOME = os.path.expanduser("~")
 APP_NAME = "Buddy 切号器"
-APP_VERSION = "2.2.19"
-UI_FONT = "Microsoft YaHei UI" if IS_WIN else "PingFang SC"
-MONO_FONT = "Consolas" if IS_WIN else "Menlo"
+APP_VERSION = "2.2.20"
 
 
 def _base_dir():
@@ -1225,37 +1223,6 @@ def refresh_profile_tokens(doc):
                 acc["nickname"] = v.strip()
                 break
     return doc
-
-
-def system_dark():
-    """当前系统是否深色模式（界面库各自跟随系统，这里只给需要手动适配的场合用）"""
-    if IS_LINUX:
-        try:
-            r = subprocess.run(
-                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
-                capture_output=True, text=True, timeout=5)
-            return "dark" in (r.stdout or "").lower()
-        except (OSError, subprocess.SubprocessError):
-            return False
-    if IS_WIN:
-        try:
-            import winreg
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-            try:
-                value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-            finally:
-                winreg.CloseKey(key)
-            return value == 0
-        except OSError:
-            return False
-    try:
-        r = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"],
-                           capture_output=True, text=True, timeout=5)
-        return "Dark" in (r.stdout or "")
-    except (OSError, subprocess.SubprocessError):
-        return False
 
 
 # ---------------------------------------------------------------- 图形界面

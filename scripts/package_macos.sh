@@ -10,7 +10,8 @@ PY=python3
 command -v python3 >/dev/null 2>&1 || PY=python
 
 ICON_ARGS=""
-[ -f assets/icon.icns ] && ICON_ARGS="--icon assets/icon.icns --add-data assets/icon_1024.png:assets"
+# mac 用 .icns；icon_1024.png 只有 Windows/Linux 当窗口图标用，不打进 mac 包
+[ -f assets/icon.icns ] && ICON_ARGS="--icon assets/icon.icns"
 
 # Qt 自带中文翻译（应用菜单/文件对话框中文化），打进包内 translations/
 # 用递归查找定位（各平台 PySide6 的翻译目录布局不一致）
@@ -47,6 +48,15 @@ done
 # 瘦身：剪掉虚拟键盘/QML/PDF/网络等无引用插件与框架（widget 应用不用）
 "$PY" scripts/prune_qt.py "dist/$APP_NAME.app"
 
+# 瘦身：去掉库文件里的本地符号（签名在后面统一重做）。
+# 只处理 Frameworks 下的库——Contents/MacOS 的引导器带着内嵌打包档案，
+# strip 会把它毁掉导致无法启动。
+find "dist/$APP_NAME.app/Contents/Frameworks" -type f -print0 | while IFS= read -r -d '' f; do
+    if file "$f" | grep -q "Mach-O"; then
+        strip -x "$f" 2>/dev/null || true
+    fi
+done
+
 # 中文化：让访达/系统弹窗跟随系统语言显示中文（未声明本地化的 app 默认英文）
 "$PY" - <<'EOF'
 import plistlib
@@ -75,7 +85,7 @@ cp -R "dist/$APP_NAME.app" dist/dmgroot/
 ln -sfn /Applications dist/dmgroot/Applications
 # hdiutil 偶发 Resource busy（残留挂载卷），最多重试 3 次
 n=0
-until hdiutil create -volname "$APP_NAME" -srcfolder dist/dmgroot -ov -format UDZO "$DMG" >/dev/null 2>&1; do
+until hdiutil create -volname "$APP_NAME" -srcfolder dist/dmgroot -ov -format ULFO "$DMG" >/dev/null 2>&1; do
     n=$((n + 1))
     [ "$n" -ge 3 ] && { echo "hdiutil 三次失败"; exit 1; }
     hdiutil detach "/Volumes/$APP_NAME" >/dev/null 2>&1

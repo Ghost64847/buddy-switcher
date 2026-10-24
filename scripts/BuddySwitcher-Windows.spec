@@ -24,7 +24,7 @@ EXCLUDES = [
     'PySide6.QtOpenGLWidgets', 'PySide6.QtVirtualKeyboard',
     'PySide6.QtNetwork', 'PySide6.QtSql', 'PySide6.QtTest',
     'PySide6.QtStateMachine', 'PySide6.QtXml', 'PySide6.QtPrintSupport',
-    'tkinter',
+    'tkinter', 'unittest', 'pydoc', 'doctest',
 ]
 
 # 按文件名/路径过滤二进制依赖（QtDBus/QtNetwork 的 DLL 保留：
