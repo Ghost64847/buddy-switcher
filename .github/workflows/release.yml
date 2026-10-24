@@ -56,6 +56,7 @@ jobs:
         shell: bash
         run: |
           pyinstaller --noconfirm --clean scripts/BuddySwitcher-Windows.spec
+          cp dist/BuddySwitcher.exe BuddySwitcher.exe
 
       - name: Build (Linux binary + tar.gz)
         if: runner.os == 'Linux'
@@ -82,7 +83,7 @@ jobs:
           name: BuddySwitcher-${{ matrix.os_name }}
           path: |
             BuddySwitcher-macOS.dmg
-            dist/BuddySwitcher.exe
+            BuddySwitcher.exe
             BuddySwitcher-Linux-x86_64.tar.gz
 
   release:
