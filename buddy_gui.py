@@ -68,9 +68,12 @@ def run():
     app.setApplicationVersion(bs.APP_VERSION)
     app.setOrganizationName("BuddySwitch")
 
-    _ui_font = app.font()
-    _ui_font.setFamily(bs.UI_FONT)  # 全局固定界面字体，避免各处粗细不一
-    app.setFont(_ui_font)
+    if bs.IS_MAC:
+        # 全局用 mac 系统字体（SF Pro + 中文自动回退 PingFang），
+        # 界面观感与原生 app 一致；Windows/Linux 用各自系统默认
+        _ui_font = app.font()
+        _ui_font.setFamily(".AppleSystemUIFont")
+        app.setFont(_ui_font)
 
     def apply_theme():
         """深浅外观：跟随系统（默认）/ 浅色 / 深色。
@@ -152,31 +155,6 @@ def run():
     current_label = QtWidgets.QLabel("读取中…")
     layout.addWidget(current_label)
 
-    class DotHandle(QtWidgets.QSplitterHandle):
-        """VS Code 式分隔手柄：一条细线中间三个圆点，可上下拖动调整分区"""
-
-        def __init__(self, orientation, parent):
-            super().__init__(orientation, parent)
-            self.setCursor(QT.SizeVerCursor)  # 告诉用户可以上下拖
-
-        def paintEvent(self, event):
-            from PySide6 import QtCore, QtGui
-            painter = QtGui.QPainter(self)
-            painter.setRenderHint(QtGui.QPainter.Antialiasing)
-            color = self.palette().placeholderText().color()
-            painter.setPen(QT.NoPen)
-            painter.setBrush(color)
-            cx, cy = self.width() / 2, self.height() / 2
-            for dx in (-7, 0, 7):
-                painter.drawEllipse(QtCore.QPointF(cx + dx, cy), 1.7, 1.7)
-            painter.end()
-
-    class VSplitter(QtWidgets.QSplitter):
-        def createHandle(self, _=None):
-            # 手柄 orientation 必须等于分隔器的方向（垂直分隔器传 Vertical）：
-            # 传反了会变成“鼠标左右滑才上下缩放、上下滑没反应”
-            return DotHandle(self.orientation(), self)
-
     table = QtWidgets.QTableWidget(0, 3)
     table.setHorizontalHeaderLabels(["账号", "UID", "有效期至"])
     table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -221,7 +199,7 @@ def run():
         lay.addWidget(inner)
         return card
 
-    splitter = VSplitter(QT.Vertical)
+    splitter = QtWidgets.QSplitter(QT.Vertical)  # 原生手柄，上下拖调分区
     splitter.addWidget(make_card(table, rounded=False))
     log_card = make_card(log, rounded=True, window_bg=True)
     log_card.layout().setContentsMargins(6, 6, 6, 6)
