@@ -78,8 +78,9 @@ else:
     ]
 
 # 高级选项（config.json 可覆盖）：restart_after_switch / switch_ide /
-# auth_file / ide_db / apps
-DEFAULT_CONFIG = {"restart_after_switch": True, "switch_ide": True}
+# auto_refresh / auto_refresh_minutes / auth_file / ide_db / apps
+DEFAULT_CONFIG = {"restart_after_switch": True, "switch_ide": True,
+                  "auto_refresh": True, "auto_refresh_minutes": 60}
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -260,18 +261,25 @@ def account_uid(doc):
 
 
 def account_label(doc):
+    """显示名：明文昵称/手机号 > token 里解出的用户名 > UID 前 8 位。
+    客户端刷新 token 后会把昵称、手机号加密回写（$wbEncrypted），这时退而求其次。"""
     acc = (doc or {}).get("account") or {}
     nick = acc.get("nickname")
-    if isinstance(nick, str) and nick.strip():
-        name = nick.strip()
-    elif isinstance(nick, dict):
-        name = "（加密昵称）"
-    else:
-        name = ""
+    name = nick.strip() if isinstance(nick, str) else ""
     phone = acc.get("phoneNumber")
     if isinstance(phone, str) and phone.strip():
         name = (name + " / " + phone.strip()).strip(" /")
-    return name or "未命名账号"
+    if name:
+        return name
+    tok = ((doc or {}).get("auth") or {}).get("accessToken")
+    if isinstance(tok, str) and tok.count(".") >= 2:
+        claims = jwt_claims(tok)
+        for key in ("preferred_username", "phone_number", "email"):
+            v = claims.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    uid = account_uid(doc)
+    return ("账号 " + uid[:8]) if uid else "未命名账号"
 
 
 def expiry_of(doc):
@@ -400,6 +408,17 @@ def capture_current():
     ensure_dirs()
     uid = safe_uid(account_uid(doc))
     pp = os.path.join(PROFILE_DIR, "%s.json" % uid)
+    # 客户端刷新 token 后会把昵称/手机号加密回写；归档时保留档案里已知的明文，
+    # 这样列表不至于全部变成「账号 xxxx」
+    if os.path.exists(pp):
+        try:
+            old_acc = (read_json(pp).get("account") or {})
+            acc = doc.setdefault("account", {})
+            for field in ("nickname", "phoneNumber"):
+                if isinstance(acc.get(field), dict) and isinstance(old_acc.get(field), str):
+                    acc[field] = old_acc[field]
+        except (OSError, ValueError):
+            pass
     write_info(doc, pp)
     log("保存当前账号 %s (%s)" % (account_label(doc), uid))
     return pp, doc
@@ -967,15 +986,19 @@ def gui():
     from tkinter import filedialog, messagebox, ttk
 
     ensure_dirs()
+    cfg = load_config()
 
     root = tk.Tk()
     root.title(APP_NAME)
-    root.geometry("720x560")
-    root.minsize(640, 460)
+    root.geometry("780x580")
+    root.minsize(680, 480)
     root.columnconfigure(0, weight=1)
-    root.rowconfigure(1, weight=1)   # 列表 + 日志（可拖动分隔条调整）
+    root.rowconfigure(1, weight=1)   # 列表 + 日志（拖动分隔条调整占比）
 
     bg = "#f5f6f8"
+    card_bg = "#ffffff"
+    card_border = "#dfe3e8"
+    select_bg = "#3478f6"   # 访达式深蓝选中色
     root.configure(background=bg)
     style = ttk.Style()
     for theme in (("aqua", "vista") if not IS_WIN else ("vista", "aqua")):
@@ -988,6 +1011,38 @@ def gui():
     style.configure("Title.TLabel", background=bg, font=(UI_FONT, 18, "bold"))
     style.configure("Subtle.TLabel", background=bg, foreground="#6b7280", font=(UI_FONT, 11))
     style.configure("Big.TButton", font=(UI_FONT, 13, "bold"))
+    style.configure("Status.TFrame", background="#ebedf0")
+    style.configure("Status.TLabel", background="#ebedf0", foreground="#374151",
+                    font=(UI_FONT, 11))
+    style.configure("Treeview", rowheight=30, background=card_bg,
+                    fieldbackground=card_bg, borderwidth=0, font=(UI_FONT, 12))
+    style.configure("Treeview.Heading", font=(UI_FONT, 11),
+                    background="#fafbfc", foreground="#6b7280")
+    style.map("Treeview",
+              background=[("selected", select_bg)],
+              foreground=[("selected", "#ffffff")])
+
+    class Card(tk.Canvas):
+        """白底圆角卡片（VS Code 风格），内容放进 .body"""
+
+        def __init__(self, master):
+            super().__init__(master, bg=bg, highlightthickness=0, bd=0)
+            self.body = tk.Frame(self, bg=card_bg)
+            self.body.pack_propagate(False)
+            self._rect = self.create_polygon((0, 0), fill=card_bg,
+                                             outline=card_border, smooth=True)
+            self._win = self.create_window(0, 0, window=self.body, anchor="nw")
+            self.tag_lower(self._rect)
+            self.bind("<Configure>", self._on_resize)
+
+        def _on_resize(self, _event):
+            w, h = self.winfo_width(), self.winfo_height()
+            r = 9
+            pts = [r, 0, w - r, 0, w, 0, w, r, w, h - r, w, h,
+                   w - r, h, r, h, 0, h, 0, h - r, 0, r, 0, 0]
+            self.coords(self._rect, *pts)
+            self.coords(self._win, 9, 9)
+            self.itemconfigure(self._win, width=max(20, w - 18), height=max(20, h - 18))
 
     # 0 顶部：标题 + 当前账号
     head = ttk.Frame(root, padding=(18, 14, 18, 6))
@@ -997,59 +1052,70 @@ def gui():
     ttk.Label(head, textvariable=current_var, style="Subtle.TLabel").pack(
         side="left", padx=(16, 0), pady=(6, 0))
 
-    # 1 账号列表 + 日志（上下可拖动分隔条调整占比）
-    paned = ttk.PanedWindow(root, orient="vertical")
-    paned.grid(row=1, column=0, sticky="nsew")
-    list_frame = ttk.Frame(paned, padding=(18, 0, 18, 0))
-    log_frame = ttk.Frame(paned, padding=(18, 4, 18, 0))
-    paned.add(list_frame, weight=3)
-    paned.add(log_frame, weight=1)
-    list_frame.columnconfigure(0, weight=1)
-    list_frame.rowconfigure(0, weight=1)
-    cols = ("name", "expiry")
-    tree = ttk.Treeview(list_frame, columns=cols, show="headings", selectmode="browse")
-    tree.heading("name", text="账号（双击切换）")
+    # 1 账号列表 + 日志：圆角卡片，中间分隔条可拖动
+    paned = tk.PanedWindow(root, orient="vertical", sashwidth=7, sashrelief="flat",
+                           bd=0, showhandle=False, background=bg, opaqueresize=True)
+    paned.grid(row=1, column=0, sticky="nsew", padx=14, pady=(4, 0))
+    list_card = Card(paned)
+    log_card = Card(paned)
+    paned.add(list_card, minsize=140, stretch="always")
+    paned.add(log_card, minsize=30, stretch="never")
+
+    list_body = list_card.body
+    list_body.columnconfigure(0, weight=1)
+    list_body.rowconfigure(0, weight=1)
+    cols = ("name", "uid", "expiry")
+    tree = ttk.Treeview(list_body, columns=cols, show="headings", selectmode="extended")
+    tree.heading("name", text="账号（双击切换，可多选）")
+    tree.heading("uid", text="UID")
     tree.heading("expiry", text="有效期至")
-    tree.column("name", width=380, anchor="w")
-    tree.column("expiry", width=150, anchor="w")
-    vsb = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+    tree.column("name", width=240, anchor="w")
+    tree.column("uid", width=230, anchor="w")
+    tree.column("expiry", width=140, anchor="w")
+    vsb = ttk.Scrollbar(list_body, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=vsb.set)
     tree.grid(row=0, column=0, sticky="nsew")
     vsb.grid(row=0, column=1, sticky="ns")
-    tree.tag_configure("current", background="#dbeafe")
-    tree.tag_configure("expired", foreground="#dc2626")
+    # 选中行访达式深蓝（style.map 在个别主题不生效时由 selrow 兜底）
+    tree.tag_configure("selrow", background=select_bg, foreground="#ffffff")
+
+    log_box = tk.Text(log_card.body, height=4, wrap="word", state="disabled",
+                      background=card_bg, relief="flat", borderwidth=0,
+                      highlightthickness=0, padx=10, pady=8, font=(MONO_FONT, 10))
+    log_box.pack(fill="both", expand=True)
 
     # 2 工具栏
-    bar = ttk.Frame(root, padding=(18, 10, 18, 8))
+    bar = ttk.Frame(root, padding=(18, 10, 18, 6))
     bar.grid(row=2, column=0, sticky="ew")
     btn_import = ttk.Button(bar, text="导入账号…")
     btn_import.pack(side="left")
-    btn_capture = ttk.Button(bar, text="保存当前账号")
+    btn_capture = ttk.Button(bar, text="保存选中账号")
     btn_capture.pack(side="left", padx=(8, 0))
+    btn_export = ttk.Button(bar, text="导出选中…")
+    btn_export.pack(side="left", padx=(8, 0))
     btn_restore = ttk.Button(bar, text="恢复备份…")
     btn_restore.pack(side="left", padx=(8, 0))
-    btn_folder = ttk.Button(bar, text="数据目录")
-    btn_folder.pack(side="left", padx=(8, 0))
     btn_switch = ttk.Button(bar, text="切换账号 ▶", style="Big.TButton")
     btn_switch.pack(side="right", ipady=3)
 
-    # 3 日志（在 PanedWindow 下半区，拖动分隔条可调高度）
-    log_frame.columnconfigure(0, weight=1)
-    log_frame.rowconfigure(0, weight=1)
-    log_box = tk.Text(log_frame, height=4, wrap="word", state="disabled",
-                      background="#ffffff", relief="solid", borderwidth=1,
-                      padx=10, pady=6, font=(MONO_FONT, 10))
-    log_box.grid(row=0, column=0, sticky="nsew")
-
-    # 4 状态栏
+    # 3 状态栏（右侧小按钮）
+    status_bar = ttk.Frame(root, style="Status.TFrame")
+    status_bar.grid(row=3, column=0, sticky="ew", pady=(8, 0))
     status_var = tk.StringVar(value="就绪")
-    status = ttk.Label(root, textvariable=status_var, anchor="w",
-                       background="#ebedf0", foreground="#374151",
-                       font=(UI_FONT, 11), padding=8)
-    status.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+    ttk.Label(status_bar, textvariable=status_var, style="Status.TLabel",
+              anchor="w").pack(side="left", fill="x", expand=True, padx=(10, 0))
+    btn_settings = ttk.Button(status_bar, text="设置…", width=7)
+    btn_settings.pack(side="right", padx=(4, 6), pady=3)
+    btn_folder = ttk.Button(status_bar, text="数据目录", width=9)
+    btn_folder.pack(side="right", padx=4, pady=3)
+    btn_log = ttk.Button(status_bar, text="隐藏日志 ▾", width=10)
+    btn_log.pack(side="right", padx=4, pady=3)
 
     busy = {"value": False}
-    buttons = [btn_switch, btn_import, btn_capture, btn_restore, btn_folder]
+    buttons = [btn_switch, btn_import, btn_capture, btn_export, btn_restore,
+               btn_settings, btn_folder]
+    log_ui = {"hidden": False, "sash": 0}
+    timer = {"id": None}
 
     def append_log(msg):
         log_box.configure(state="normal")
@@ -1066,14 +1132,51 @@ def gui():
             except tk.TclError:
                 pass
 
-    def refresh(select_uid=None):
+    # 日志面板：拖到最小自动收起，状态栏按钮展开/收起
+    def sash_get():
+        return paned.sash_coord(0)[1]
+
+    def sash_set(pos):
+        paned.sash_place(0, 0, int(pos))
+
+    def collapse_log():
+        if log_ui["hidden"]:
+            return
+        log_ui["sash"] = sash_get()
+        paned.forget(log_card)
+        log_ui["hidden"] = True
+        btn_log.configure(text="显示日志 ▸")
+
+    def expand_log():
+        if not log_ui["hidden"]:
+            return
+        paned.add(log_card, minsize=30, stretch="never")
+        pos = log_ui["sash"] or max(220, paned.winfo_height() - 170)
+        root.after_idle(lambda: sash_set(pos))
+        log_ui["hidden"] = False
+        btn_log.configure(text="隐藏日志 ▾")
+
+    def toggle_log():
+        collapse_log() if not log_ui["hidden"] else expand_log()
+
+    def on_sash_release(_event):
+        if not log_ui["hidden"] and log_card.winfo_height() <= 40:
+            collapse_log()
+
+    # 多选选中色兜底：原生主题不吃 style.map 时用 tag 上色
+    def on_select(_event):
+        sel = set(tree.selection())
+        for iid in tree.get_children():
+            tags = [t for t in (tree.item(iid, "tags") or ()) if t != "selrow"]
+            if iid in sel:
+                tags.append("selrow")
+            tree.item(iid, tags=tags)
+
+    def refresh(select_uids=None):
         sel = tree.selection()
-        keep_uid = select_uid
-        if not keep_uid and sel:
-            try:
-                keep_uid = os.path.basename(sel[0])[:-5]
-            except (IndexError, OSError):
-                keep_uid = None
+        keep = set(select_uids or [])
+        if not keep:
+            keep = {os.path.basename(s)[:-5] for s in sel}
         for i in tree.get_children():
             tree.delete(i)
         cur = read_info()
@@ -1086,27 +1189,32 @@ def gui():
         now = int(time.time() * 1000)
         for p in list_profiles():
             name = ("● " if p["uid"] == cur_uid else "") + p["label"]
-            tags = []
-            if p["uid"] == cur_uid:
-                tags.append("current")
             exp_txt = fmt_ts(p["expiry"])
             if p["expiry"] and p["expiry"] < now:
                 exp_txt += "（已过期）"
-                tags.append("expired")
-            tree.insert("", "end", iid=p["path"], values=(name, exp_txt), tags=tags)
-        if keep_uid:
-            iid = os.path.join(PROFILE_DIR, "%s.json" % safe_uid(keep_uid))
-            if iid in tree.get_children():
-                tree.selection_set(iid)
-                tree.see(iid)
+            tree.insert("", "end", iid=p["path"],
+                        values=(name, p["uid"], exp_txt))
+        iids = [os.path.join(PROFILE_DIR, "%s.json" % safe_uid(u)) for u in keep]
+        live = [i for i in iids if i in tree.get_children()]
+        if live:
+            tree.selection_set(live)
+            tree.focus(live[0])
+            tree.see(live[0])
 
-    def selected_doc():
+    def profile_map():
+        return {p["path"]: p for p in list_profiles()}
+
+    def switch_source():
+        """切换用哪个账号：焦点行优先，否则第一个选中行"""
         sel = tree.selection()
         if not sel:
             status_var.set("请先在列表里选择一个账号")
             return None
+        iid = tree.focus()
+        if iid not in sel:
+            iid = sel[0]
         try:
-            return read_json(sel[0])
+            return read_json(iid)
         except (OSError, ValueError) as e:
             messagebox.showerror(APP_NAME, "读取账号文件失败：%s" % e, parent=root)
             return None
@@ -1154,8 +1262,12 @@ def gui():
                             append_log(line)
                         append_log(payload[0])
                         status_var.set("✓ " + payload[0])
-                        refresh(uid)  # 完成不用弹窗，界面内直接反馈
+                        refresh([uid])  # 完成不用弹窗，界面内直接反馈
                         set_busy(False)
+                        if any(l.startswith("已重启") for l in payload[1:]):
+                            # 客户端重启后会自动续期 token，稍后把新登录归档
+                            append_log("客户端重启 2 分钟后自动归档刷新后的登录…")
+                            root.after(120000, auto_capture_quiet)
                     elif kind == "error":
                         finished = True
                         append_log("失败：%s" % payload)
@@ -1171,9 +1283,36 @@ def gui():
         root.after(120, poll)
 
     def on_switch(_event=None):
-        doc = selected_doc()
+        doc = switch_source()
         if doc:
             do_switch(doc)
+
+    def auto_capture_quiet():
+        """静默归档当前登录（客户端续期 token 后把新有效期存进档案）"""
+        if busy["value"]:
+            return
+        try:
+            _, doc = capture_current()
+        except (OSError, ValueError):
+            return
+        refresh()
+        append_log("已自动刷新当前登录归档：%s（有效期至 %s）"
+                   % (account_label(doc), fmt_ts(expiry_of(doc))))
+
+    def schedule_auto():
+        if timer["id"] is not None:
+            try:
+                root.after_cancel(timer["id"])
+            except tk.TclError:
+                pass
+        minutes = max(1, int(cfg.get("auto_refresh_minutes", 60) or 60))
+        timer["id"] = root.after(minutes * 60000, auto_tick)
+
+    def auto_tick():
+        timer["id"] = None
+        if cfg.get("auto_refresh", True):
+            auto_capture_quiet()
+        schedule_auto()
 
     def on_import():
         if busy["value"]:
@@ -1189,21 +1328,37 @@ def gui():
             messagebox.showerror(APP_NAME, str(e), parent=root)
             return
         uid = account_uid(doc)
-        refresh(uid)
+        refresh([uid])
         append_log("已导入：%s（%s）" % (account_label(doc), uid))
         status_var.set("已导入 %s，双击列表即可切换" % account_label(doc))
 
     def on_capture():
+        """保存选中账号：当前登录的账号才有新数据（客户端续期后的 token）"""
         if busy["value"]:
+            return
+        cur = read_info()
+        if not cur:
+            messagebox.showinfo(APP_NAME, "当前没有登录文件。", parent=root)
+            return
+        cur_uid = account_uid(cur)
+        pmap = profile_map()
+        sel_uids = [pmap[i]["uid"] for i in tree.selection() if i in pmap]
+        if sel_uids and cur_uid not in sel_uids:
+            messagebox.showinfo(
+                APP_NAME,
+                "选中的账号不是当前登录的账号（标 ● 的是 %s），没有新数据可保存。\n"
+                "要刷新哪个账号，先切换过去再保存。" % account_label(cur),
+                parent=root)
             return
         try:
             _, doc = capture_current()
         except (OSError, ValueError) as e:
             messagebox.showerror(APP_NAME, str(e), parent=root)
             return
-        refresh(account_uid(doc))
-        append_log("已保存当前账号：%s（%s）" % (account_label(doc), account_uid(doc)))
-        status_var.set("已保存当前账号")
+        refresh([cur_uid])
+        append_log("已保存当前登录：%s（有效期至 %s）"
+                   % (account_label(doc), fmt_ts(expiry_of(doc))))
+        status_var.set("已保存 %s" % account_label(doc))
 
     def on_delete():
         if busy["value"]:
@@ -1211,12 +1366,55 @@ def gui():
         sel = tree.selection()
         if not sel:
             return
-        uid = os.path.basename(sel[0])[:-5]
-        if messagebox.askyesno(APP_NAME, "删除本地档案 %s？\n（只删除工具里的存档，"
-                               "不影响客户端当前登录）" % uid, parent=root):
-            delete_profile(uid)
+        pmap = profile_map()
+        uids = [pmap[i]["uid"] for i in sel if i in pmap]
+        if not uids:
+            return
+        shown = "、".join(uids[:3]) + ("…" if len(uids) > 3 else "")
+        if messagebox.askyesno(APP_NAME, "删除 %d 个本地档案？\n%s\n"
+                               "（只删除工具里的存档，不影响客户端当前登录）"
+                               % (len(uids), shown), parent=root):
+            for u in uids:
+                delete_profile(u)
             refresh()
-            status_var.set("已删除档案 %s" % uid)
+            status_var.set("已删除 %d 个档案" % len(uids))
+
+    def on_export():
+        if busy["value"]:
+            return
+        sel = tree.selection()
+        if not sel:
+            status_var.set("请先选择要导出的账号")
+            return
+        pmap = profile_map()
+        items = [(pmap[i]["uid"], pmap[i]["doc"]) for i in sel if i in pmap]
+        if not items:
+            return
+        if len(items) == 1:
+            uid, doc = items[0]
+            path = filedialog.asksaveasfilename(
+                parent=root, title="导出账号", defaultextension=".json",
+                initialfile="workbuddy-%s.json" % safe_uid(uid),
+                filetypes=[("JSON 文件", "*.json")])
+            if not path:
+                return
+            dests = [(path, doc)]
+        else:
+            d = filedialog.askdirectory(
+                parent=root, title="选择导出目录（%d 个账号）" % len(items))
+            if not d:
+                return
+            dests = [(os.path.join(d, "workbuddy-%s.json" % safe_uid(u)), doc)
+                     for u, doc in items]
+        try:
+            for dest, doc in dests:
+                Path(dest).write_text(json.dumps(doc, ensure_ascii=False, indent=2),
+                                      encoding="utf-8")
+        except OSError as e:
+            messagebox.showerror(APP_NAME, "导出失败：%s" % e, parent=root)
+            return
+        append_log("已导出 %d 个账号" % len(dests))
+        status_var.set("已导出 %d 个账号" % len(dests))
 
     def on_restore():
         if busy["value"]:
@@ -1260,29 +1458,87 @@ def gui():
         lb.bind("<Double-1>", pick)
         win.protocol("WM_DELETE_WINDOW", close)
 
+    INTERVALS = [("30 分钟", 30), ("1 小时", 60), ("3 小时", 180),
+                 ("6 小时", 360), ("12 小时", 720), ("每天", 1440)]
+
+    def on_settings():
+        if busy["value"]:
+            return
+        win = tk.Toplevel(root)
+        win.title("设置")
+        win.resizable(False, False)
+        win.transient(root)
+        body = ttk.Frame(win, padding=16)
+        body.pack(fill="both", expand=True)
+        auto_var = tk.BooleanVar(value=bool(cfg.get("auto_refresh", True)))
+        minutes = int(cfg.get("auto_refresh_minutes", 60) or 60)
+        interval_var = tk.StringVar(
+            value=next((lbl for lbl, m in INTERVALS if m == minutes), "1 小时"))
+        restart_var = tk.BooleanVar(value=bool(cfg.get("restart_after_switch", True)))
+        ide_var = tk.BooleanVar(value=bool(cfg.get("switch_ide", True)))
+
+        ttk.Checkbutton(body, text="定时刷新当前账号有效期"
+                        "（客户端自动续期后，工具把新 token 归档）",
+                        variable=auto_var).grid(row=0, column=0, sticky="w")
+        row1 = ttk.Frame(body)
+        row1.grid(row=1, column=0, sticky="w", pady=(4, 0), padx=(24, 0))
+        ttk.Label(row1, text="刷新间隔：").pack(side="left")
+        ttk.Combobox(row1, textvariable=interval_var, state="readonly", width=10,
+                     values=[lbl for lbl, _ in INTERVALS]).pack(side="left")
+        ttk.Checkbutton(body, text="切换后自动重启客户端",
+                        variable=restart_var).grid(row=2, column=0,
+                                                   sticky="w", pady=(10, 0))
+        ttk.Checkbutton(body, text="同步切换 CodeBuddy IDE 登录",
+                        variable=ide_var).grid(row=3, column=0, sticky="w", pady=(6, 0))
+
+        def save():
+            cfg["auto_refresh"] = auto_var.get()
+            cfg["auto_refresh_minutes"] = dict(INTERVALS)[interval_var.get()]
+            cfg["restart_after_switch"] = restart_var.get()
+            cfg["switch_ide"] = ide_var.get()
+            save_config(cfg)
+            schedule_auto()
+            win.destroy()
+            status_var.set("设置已保存")
+
+        btns = ttk.Frame(body)
+        btns.grid(row=4, column=0, sticky="e", pady=(12, 0))
+        ttk.Button(btns, text="确定", command=save).pack(side="left")
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=(8, 0))
+
     menu = tk.Menu(tree, tearoff=0)
     menu.add_command(label="切换到该账号", command=on_switch)
-    menu.add_command(label="删除该档案", command=on_delete)
+    menu.add_command(label="导出选中账号…", command=on_export)
+    menu.add_command(label="删除选中档案", command=on_delete)
 
-    def on_menu(_event):
-        iid = tree.identify_row(_event.y)
+    def on_menu(event):
+        iid = tree.identify_row(event.y)
         if iid and not busy["value"]:
-            tree.selection_set(iid)
-            menu.tk_popup(_event.x_root, _event.y_root)
+            if iid not in tree.selection():
+                tree.selection_set(iid)
+            menu.tk_popup(event.x_root, event.y_root)
 
     btn_switch.configure(command=on_switch)
     btn_import.configure(command=on_import)
     btn_capture.configure(command=on_capture)
+    btn_export.configure(command=on_export)
     btn_restore.configure(command=on_restore)
+    btn_settings.configure(command=on_settings)
     btn_folder.configure(command=lambda: reveal_path(STORE))
+    btn_log.configure(command=toggle_log)
+    paned.bind("<ButtonRelease-1>", on_sash_release)
     tree.bind("<Double-1>", on_switch)
     tree.bind("<Return>", on_switch)
     tree.bind("<Button-3>", on_menu)
+    tree.bind("<<TreeviewSelect>>", on_select)
 
     refresh()
     append_log("数据目录：%s" % STORE)
-    append_log("用法：导入账号 → 双击列表（或选中后点「切换账号」）。"
-               "首次同步 IDE 时如弹出钥匙串授权，请点「始终允许」。")
+    append_log("用法：导入账号 → 双击列表切换；按住 Ctrl / Command 可多选，"
+               "多选后可导出或删除。")
+    append_log("提示：首次同步 IDE 时如弹出钥匙串授权，请点「始终允许」。")
+    root.after(150, lambda: sash_set(max(220, paned.winfo_height() - 165)))
+    schedule_auto()
     root.mainloop()
 
 

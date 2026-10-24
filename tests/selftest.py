@@ -84,6 +84,65 @@ class DocLogicTest(unittest.TestCase):
             self.assertTrue(cleaned)  # 永不为空
 
 
+class LabelTest(unittest.TestCase):
+    @staticmethod
+    def _jwt_with(username):
+        import base64
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"exp": 1999999999, "preferred_username": username})
+            .encode()).decode().rstrip("=")
+        return "h.%s.s" % payload
+
+    def test_plaintext_nickname_wins(self):
+        self.assertEqual(bs.account_label(fake_doc()), "测试账号 / 138****0000")
+
+    def test_encrypted_nickname_falls_back_to_jwt_username(self):
+        doc = fake_doc()
+        doc["account"]["nickname"] = {"$wbEncrypted": 1, "data": "xx"}
+        doc["account"]["phoneNumber"] = {"$wbEncrypted": 1, "data": "xx"}
+        doc["auth"]["accessToken"] = self._jwt_with("15900001111")
+        self.assertEqual(bs.account_label(doc), "15900001111")
+
+    def test_fully_encrypted_falls_back_to_uid(self):
+        doc = fake_doc()
+        doc["account"]["nickname"] = {"$wbEncrypted": 1}
+        doc["account"]["phoneNumber"] = {"$wbEncrypted": 1}
+        doc["auth"]["accessToken"] = {"$wbEncrypted": 1}
+        self.assertEqual(bs.account_label(doc), "账号 u123")
+
+
+class CaptureMergeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="buddycap-")
+        self._old_target = bs.TARGET
+        self._old_profile = bs.PROFILE_DIR
+        self._old_migrated = bs._migrated
+        bs.TARGET = safe_join(self.tmp, "live.info")
+        bs.PROFILE_DIR = safe_join(self.tmp, "profiles")
+        bs._migrated = True
+        os.makedirs(bs.PROFILE_DIR)
+
+    def tearDown(self):
+        bs.TARGET = self._old_target
+        bs.PROFILE_DIR = self._old_profile
+        bs._migrated = self._old_migrated
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_capture_keeps_known_plaintext_nickname(self):
+        # 档案里已有明文昵称
+        old = fake_doc()
+        Path(safe_join(bs.PROFILE_DIR, "u123.json")).write_text(
+            json.dumps(old), encoding="utf-8")
+        # 客户端刷新后昵称/手机号被加密回写
+        live = fake_doc()
+        live["account"]["nickname"] = {"$wbEncrypted": 1}
+        live["account"]["phoneNumber"] = {"$wbEncrypted": 1}
+        Path(bs.TARGET).write_text(json.dumps(live), encoding="utf-8")
+        _, doc = bs.capture_current()
+        self.assertEqual(doc["account"]["nickname"], "测试账号")
+        self.assertEqual(doc["account"]["phoneNumber"], "138****0000")
+
+
 class StoreTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="buddytest-")
