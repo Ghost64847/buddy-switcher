@@ -38,7 +38,7 @@ IS_LINUX = (not IS_WIN) and (sys.platform.startswith("linux")
 IS_MAC = (not IS_WIN) and (not IS_LINUX)
 HOME = os.path.expanduser("~")
 APP_NAME = "Buddy 切号器"
-APP_VERSION = "2.2.16"
+APP_VERSION = "2.2.17"
 UI_FONT = "Microsoft YaHei UI" if IS_WIN else "PingFang SC"
 MONO_FONT = "Consolas" if IS_WIN else "Menlo"
 
@@ -1035,6 +1035,26 @@ def _wait_file_stable(path, timeout=3.0):
 
 # ---------------------------------------------------------------- 切号
 
+def client_installed(app):
+    """按平台检查客户端是否装在本机（默认安装路径 / 配置的启动路径）"""
+    if IS_WIN:
+        paths = [os.path.expandvars(os.path.expanduser(p))
+                 for p in app.get("launch", [])]
+    else:
+        paths = [app["path"]] if isinstance(app.get("path"), str) else app.get("launch", [])
+    return any(os.path.exists(p) for p in paths)
+
+
+def workbuddy_installed():
+    """本机是否装着 WorkBuddy 客户端（装了或正在运行都算）。
+    登录数据目录不算数——切换本身就会把它写出来。"""
+    for app in get_apps():
+        if app.get("name", "").lower() == "workbuddy":
+            if client_installed(app) or app_running(app):
+                return True
+    return False
+
+
 def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None,
               do_wb=None, do_ide=None):
     """执行切换。返回结果行列表，第一行是标题；失败抛异常。
@@ -1092,7 +1112,11 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None,
         if account_uid(check) != uid:
             raise RuntimeError("写入后校验失败，登录文件里的账号不是目标账号。"
                                "请用「恢复备份」还原。")
-        lines.append("WorkBuddy：已切换（有效期至 %s）" % fmt_ts(exp))
+        if workbuddy_installed():
+            lines.append("WorkBuddy：已切换（有效期至 %s）" % fmt_ts(exp))
+        else:
+            lines.append("WorkBuddy：本机未检测到客户端，登录文件已写入"
+                         "（装好客户端启动即生效）")
         if exp and exp < int(time.time() * 1000):
             lines.append("注意：该账号 token 已过期，启动后可能需要重新登录。")
         if template and account_uid(template) == uid:
