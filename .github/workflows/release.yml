@@ -35,7 +35,9 @@ jobs:
 
       - name: Build (macOS app + dmg)
         if: runner.os == 'macOS'
-        run: bash scripts/package_macos.sh
+        run: |
+          bash scripts/package_macos.sh
+          cp dist/BuddySwitcher-macOS.dmg BuddySwitcher-macOS.dmg
 
       - name: Build (Windows exe + zip)
         if: runner.os == 'Windows'
@@ -48,7 +50,7 @@ jobs:
         with:
           name: BuddySwitcher-${{ matrix.os_name }}
           path: |
-            dist/BuddySwitcher-macOS.dmg
+            BuddySwitcher-macOS.dmg
             BuddySwitcher-Windows.zip
 
   release:
