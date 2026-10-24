@@ -121,6 +121,19 @@ class LabelTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             bs.token_endpoint_of(doc)
 
+    def test_extract_session_name_chain(self):
+        # 明文昵称优先
+        self.assertEqual(bs._extract_session_name(
+            {"account": {"nickname": "小明", "phoneNumber": "138"}}), "小明")
+        # 昵称缺失时用手机号
+        self.assertEqual(bs._extract_session_name(
+            {"account": {"phoneNumber": "15900001111"}}), "15900001111")
+        # 都没有时解 token
+        self.assertEqual(bs._extract_session_name(
+            {"account": {}, "auth": {"accessToken": self._jwt_with("13911112222")}}),
+            "13911112222")
+        self.assertIsNone(bs._extract_session_name({"account": {}}))
+
     def test_plaintext_nickname_wins(self):
         self.assertEqual(bs.account_label(fake_doc()), "测试账号 / 138****0000")
 

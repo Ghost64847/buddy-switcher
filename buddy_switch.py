@@ -401,15 +401,61 @@ def import_profile(path):
     return pp, doc
 
 
+def _extract_session_name(sess):
+    """从登录会话文档里提取可读的账号名：昵称 > 手机号 > token 里的用户名"""
+    acc = (sess or {}).get("account") or {}
+    for field in ("nickname", "phoneNumber"):
+        v = acc.get(field)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    tok = ((sess or {}).get("auth") or {}).get("accessToken")
+    if isinstance(tok, str) and tok.count(".") >= 2:
+        claims = jwt_claims(tok)
+        for key in ("preferred_username", "phone_number", "email"):
+            v = claims.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def resolve_nickname_from_ide(uid):
+    """从 CodeBuddy IDE 的登录库/历史快照解出该账号的真实昵称。
+    这些记录可以解密（钥匙串/DPAPI），昵称是明文。失败返回 None。"""
+    try:
+        if not ide_available():
+            return None
+        key = None if IS_WIN else ide_secret_key()
+        _, sess = read_ide_session(key)
+        if sess and account_uid(sess) == uid:
+            name = _extract_session_name(sess)
+            if name:
+                return name
+        snap_path = ide_snapshot_path(uid)
+        if os.path.exists(snap_path):
+            snap = read_json(snap_path)
+            secret = snap.get("secret")
+            if isinstance(secret, str):
+                blob = json.loads(secret)
+                raw = bytes(blob["data"])
+                plain = ide_decrypt(raw if IS_WIN else raw[3:], key)
+                name = _extract_session_name(json.loads(plain))
+                if name:
+                    return name
+    except Exception:  # noqa: BLE001  解不出来就算了，不影响主流程
+        return None
+    return None
+
+
 def capture_current():
     doc = read_info()
     if not doc:
         raise ValueError("当前没有登录文件，无法保存。")
     ensure_dirs()
-    uid = safe_uid(account_uid(doc))
+    uid_raw = account_uid(doc)
+    uid = safe_uid(uid_raw)
     pp = os.path.join(PROFILE_DIR, "%s.json" % uid)
-    # 客户端刷新 token 后会把昵称/手机号加密回写；归档时保留档案里已知的明文，
-    # 这样列表不至于全部变成「账号 xxxx」
+    # 客户端刷新 token 后会把昵称/手机号加密回写；归档时尽量留住明文：
+    # 1) 档案里已有的明文字段；2) 从 IDE 登录记录/快照解密出来的真实昵称
     if os.path.exists(pp):
         try:
             old_acc = (read_json(pp).get("account") or {})
@@ -419,6 +465,11 @@ def capture_current():
                     acc[field] = old_acc[field]
         except (OSError, ValueError):
             pass
+    if isinstance((doc.get("account") or {}).get("nickname"), dict):
+        real = resolve_nickname_from_ide(uid_raw)
+        if real:
+            doc["account"]["nickname"] = real
+            log("已从 IDE 登录记录解析真实昵称：%s" % real)
     write_info(doc, pp)
     log("保存当前账号 %s (%s)" % (account_label(doc), uid))
     return pp, doc
@@ -445,9 +496,10 @@ def list_profiles():
             doc = read_json(path)
         except (OSError, ValueError):
             continue
+        uid = account_uid(doc) or fn[:-5]
         out.append({
             "path": path,
-            "uid": account_uid(doc) or fn[:-5],
+            "uid": uid,
             "label": account_label(doc),
             "expiry": expiry_of(doc),
             "doc": doc,
@@ -1099,7 +1151,7 @@ def gui():
     root.geometry("780x560")
     root.minsize(680, 460)
     root.columnconfigure(0, weight=1)
-    root.rowconfigure(1, weight=1)   # 账号列表 + 日志（可拖动分隔条）
+    root.rowconfigure(2, weight=1)   # 账号列表 + 日志（可拖动分隔条）
 
     # 全部使用系统原生控件：macOS 上不自定义任何颜色/字体/形状，
     # 深浅色随系统自动切换、兼容各 macOS 版本；Windows 无系统配色，手动适配
@@ -1152,43 +1204,47 @@ def gui():
             apply_theme(force=True)
 
     # 0 顶部：当前账号（标题用系统标题栏，不在窗口里重复）
-    head = ttk.Frame(root, padding=(14, 12, 14, 4))
+    head = ttk.Frame(root, padding=(14, 10, 14, 8))
     head.grid(row=0, column=0, sticky="ew")
     current_var = tk.StringVar(value="读取中…")
     ttk.Label(head, textvariable=current_var, style="Subtle.TLabel").pack(side="left")
 
-    # 1 账号列表 + 日志：系统控件，中间可拖动分隔条
+    ttk.Separator(root, orient="horizontal").grid(row=1, column=0, sticky="ew")
+
+    # 2 账号列表 + 日志：系统控件带标准内嵌边框，中间可拖动分隔条
     paned = tk.PanedWindow(root, orient="vertical", sashwidth=6, sashrelief="flat",
                            bd=0, showhandle=False, opaqueresize=True)
-    paned.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 0))
-    list_frame = ttk.Frame(paned)
+    paned.grid(row=2, column=0, sticky="nsew", padx=12, pady=(8, 0))
+    list_wrap = tk.Frame(paned, relief="sunken", borderwidth=1,
+                         highlightthickness=0)
     log_frame = ttk.Frame(paned)
-    paned.add(list_frame, minsize=140, stretch="always")
+    paned.add(list_wrap, minsize=140, stretch="always")
     # 日志有最小高度，拖不小；隐藏只用状态栏按钮
     paned.add(log_frame, minsize=110, stretch="never")
 
-    list_frame.columnconfigure(0, weight=1)
-    list_frame.rowconfigure(0, weight=1)
+    list_wrap.columnconfigure(0, weight=1)
+    list_wrap.rowconfigure(0, weight=1)
     cols = ("name", "uid", "expiry")
-    tree = ttk.Treeview(list_frame, columns=cols, show="headings", selectmode="extended")
+    tree = ttk.Treeview(list_wrap, columns=cols, show="headings", selectmode="extended")
     tree.heading("name", text="账号（双击切换，可多选）")
     tree.heading("uid", text="UID")
     tree.heading("expiry", text="有效期至")
     tree.column("name", width=240, anchor="w")
     tree.column("uid", width=230, anchor="w")
     tree.column("expiry", width=140, anchor="w")
-    vsb = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+    vsb = ttk.Scrollbar(list_wrap, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=vsb.set)
     tree.grid(row=0, column=0, sticky="nsew")
     vsb.grid(row=0, column=1, sticky="ns")
 
     log_box = tk.Text(log_frame, height=4, wrap="word", state="disabled",
+                      relief="sunken", borderwidth=1,
                       padx=10, pady=6, font=(MONO_FONT, 10))
     log_box.pack(fill="both", expand=True)
 
-    # 2 工具栏（全部系统按钮）
+    # 3 工具栏（全部系统按钮）
     bar = ttk.Frame(root, padding=(14, 10, 14, 6))
-    bar.grid(row=2, column=0, sticky="ew")
+    bar.grid(row=3, column=0, sticky="ew")
     btn_import = ttk.Button(bar, text="导入账号…")
     btn_import.pack(side="left")
     btn_capture = ttk.Button(bar, text="保存选中账号")
@@ -1200,9 +1256,11 @@ def gui():
     btn_switch = ttk.Button(bar, text="切换账号")
     btn_switch.pack(side="right")
 
-    # 3 状态栏（右侧小按钮）
+    # 4 状态栏（右侧小按钮）
+    ttk.Separator(root, orient="horizontal").grid(row=4, column=0, sticky="ew",
+                                                  pady=(6, 0))
     status_bar = ttk.Frame(root)
-    status_bar.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+    status_bar.grid(row=5, column=0, sticky="ew", pady=(2, 4))
     status_var = tk.StringVar(value="就绪")
     ttk.Label(status_bar, textvariable=status_var, style="Subtle.TLabel",
               anchor="w").pack(side="left", fill="x", expand=True, padx=(4, 0))
@@ -1394,6 +1452,11 @@ def gui():
         root.after(120, poll)
 
     def on_switch(_event=None):
+        if _event is not None and (_event.state & 0x000C):
+            return  # 按住 Ctrl / Command 操作多选时的双击，不当作切换
+        if len(tree.selection()) > 1:
+            status_var.set("选中了多个账号，请只选一个再切换")
+            return
         doc = switch_source()
         if doc:
             do_switch(doc)
@@ -1607,20 +1670,28 @@ def gui():
             return
         win = tk.Toplevel(root)
         win.title("恢复备份")
-        win.geometry("560x360")
+        win.geometry("600x380")
         win.transient(root)
-        lb = tk.Listbox(win, font=(UI_FONT, 12))
+        lb = tk.Listbox(win, font=(UI_FONT, 12), selectmode="extended")
+
+        def reload_list():
+            lb.delete(0, "end")
+            for b in backups:
+                lb.insert("end", "%s   %s   %s" % (
+                    datetime.fromtimestamp(b["mtime"]).strftime("%m-%d %H:%M"),
+                    b["label"], b["uid"][:8]))
+
+        reload_list()
         lb.pack(fill="both", expand=True, padx=12, pady=12)
-        for b in backups:
-            lb.insert("end", "%s   %s   %s" % (
-                datetime.fromtimestamp(b["mtime"]).strftime("%m-%d %H:%M"),
-                b["label"], b["uid"][:8]))
+
+        def select_all(_event=None):
+            lb.select_set(0, "end")
 
         def pick(_event=None):
             sel = lb.curselection()
             if not sel:
                 return
-            b = backups[sel[0]]
+            b = backups[sel[0]]  # 恢复第一个选中的
             try:
                 doc = read_json(b["path"])
             except (OSError, ValueError) as e:
@@ -1629,15 +1700,38 @@ def gui():
             win.destroy()
             do_switch(doc)
 
+        def del_backups():
+            sel = lb.curselection()
+            if not sel:
+                return
+            if not messagebox.askyesno(
+                    APP_NAME, "删除 %d 个备份文件？\n（只删备份，不影响账号档案和当前登录）"
+                    % len(sel), parent=win):
+                return
+            for idx in sorted(sel, reverse=True):
+                try:
+                    os.remove(backups[idx]["path"])
+                except OSError:
+                    pass
+                del backups[idx]
+            reload_list()
+            if not backups:
+                win.destroy()
+                status_var.set("备份已清空")
+
         def close():
             if not busy["value"]:
                 win.destroy()
 
         btns = ttk.Frame(win)
         btns.pack(fill="x", padx=12, pady=(0, 12))
-        ttk.Button(btns, text="恢复此备份", command=pick).pack(side="left")
+        ttk.Button(btns, text="恢复选中的备份", command=pick).pack(side="left")
+        ttk.Button(btns, text="删除选中备份", command=del_backups).pack(
+            side="left", padx=(8, 0))
         ttk.Button(btns, text="取消", command=close).pack(side="right")
         lb.bind("<Double-1>", pick)
+        lb.bind("<%s-a>" % accel, select_all)
+        lb.bind("<%s-A>" % accel, select_all)
         win.protocol("WM_DELETE_WINDOW", close)
 
     THEME_LABELS = [("跟随系统", "auto"), ("浅色", "light"), ("深色", "dark")]
@@ -1726,8 +1820,7 @@ def gui():
     def on_menu(event):
         iid = tree.identify_row(event.y)
         if iid and not busy["value"]:
-            if iid not in tree.selection():
-                tree.selection_set(iid)
+            tree.selection_set(iid)  # 右键聚焦单行，菜单动作始终作用于它
             menu.tk_popup(event.x_root, event.y_root)
 
     # 系统菜单栏（macOS 显示在屏幕顶部，Windows 显示在窗口内）
