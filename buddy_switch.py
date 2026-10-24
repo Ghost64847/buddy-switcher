@@ -979,6 +979,112 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None):
     return lines
 
 
+# ---------------------------------------------------------------- 联网刷新 / 系统外观
+
+# 允许联网刷新的登录服务器（防止恶意 json 把 token 转发到别处）
+ALLOWED_REFRESH_HOSTS = ("www.codebuddy.cn", "codebuddy.cn",
+                         "www.workbuddy.cn", "workbuddy.cn")
+
+
+def token_endpoint_of(doc):
+    """从 token 的 iss/azp 推断登录服务器（Keycloak）的 token 端点和 client_id。
+    只接受 https 且域名在白名单内的签发方。"""
+    import urllib.parse
+    auth = (doc or {}).get("auth") or {}
+    for key in ("refreshToken", "accessToken"):
+        tok = auth.get(key)
+        if not (isinstance(tok, str) and tok.count(".") >= 2):
+            continue
+        claims = jwt_claims(tok)
+        iss = claims.get("iss") or ""
+        if "/realms/" not in iss:
+            continue
+        parts = urllib.parse.urlsplit(iss)
+        if parts.scheme != "https" or parts.hostname not in ALLOWED_REFRESH_HOSTS:
+            raise ValueError("登录服务器不在允许名单内（%s）" % parts.hostname)
+        return (iss.rstrip("/") + "/protocol/openid-connect/token",
+                claims.get("azp") or claims.get("client_id") or "console")
+    return None, None
+
+
+def refresh_profile_tokens(doc):
+    """用档案里明文的 refreshToken 联网换新 token（Keycloak OIDC 标准接口）。
+    密文档案（本机抓取的）没有明文 refreshToken，无法远程刷新。成功返回更新后的 doc。"""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    auth = doc.get("auth") or {}
+    rt = auth.get("refreshToken")
+    if not (isinstance(rt, str) and rt):
+        raise ValueError("档案里的 token 是密文（本机抓取），无法联网续期；"
+                         "可重新导入明文 json，或等客户端续期后「保存选中账号」")
+    url, client_id = token_endpoint_of(doc)
+    if not url:
+        raise ValueError("无法从 token 识别登录服务器地址")
+    data = urllib.parse.urlencode({"grant_type": "refresh_token",
+                                   "refresh_token": rt,
+                                   "client_id": client_id}).encode()
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"Content-Type":
+                                          "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            out = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:120]
+        raise RuntimeError("服务器拒绝刷新（%s）：%s" % (e.code, detail))
+    except (OSError, ValueError) as e:
+        raise RuntimeError("网络请求失败：%s" % e)
+    if "access_token" not in out:
+        raise RuntimeError("服务器返回里没有 access_token")
+
+    now = int(time.time() * 1000)
+    auth["accessToken"] = out["access_token"]
+    auth["expiresIn"] = int(out.get("expires_in", 0))
+    auth["expiresAt"] = now + auth["expiresIn"] * 1000
+    auth["lastRefreshTime"] = now
+    if out.get("refresh_token"):
+        auth["refreshToken"] = out["refresh_token"]
+        auth["refreshExpiresIn"] = int(out.get("refresh_expires_in", 0))
+        auth["refreshExpiresAt"] = now + auth["refreshExpiresIn"] * 1000
+    if out.get("session_state"):
+        auth["sessionState"] = out["session_state"]
+    # 昵称是密文时，顺手用新 token 里的用户名补上，列表能认人
+    acc = doc.setdefault("account", {})
+    if isinstance(acc.get("nickname"), dict):
+        claims = jwt_claims(out["access_token"])
+        for key in ("preferred_username", "phone_number"):
+            v = claims.get(key)
+            if isinstance(v, str) and v.strip():
+                acc["nickname"] = v.strip()
+                break
+    return doc
+
+
+def system_dark():
+    """当前系统是否深色模式"""
+    if IS_WIN:
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            try:
+                value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            finally:
+                winreg.CloseKey(key)
+            return value == 0
+        except OSError:
+            return False
+    try:
+        r = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"],
+                           capture_output=True, text=True, timeout=5)
+        return "Dark" in (r.stdout or "")
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 # ---------------------------------------------------------------- 图形界面
 
 def gui():
@@ -995,11 +1101,16 @@ def gui():
     root.columnconfigure(0, weight=1)
     root.rowconfigure(1, weight=1)   # 列表 + 日志（拖动分隔条调整占比）
 
-    bg = "#f5f6f8"
-    card_bg = "#ffffff"
-    card_border = "#dfe3e8"
-    select_bg = "#3478f6"   # 访达式深蓝选中色
-    root.configure(background=bg)
+    PALETTES = {
+        "light": {"page": "#f5f6f8", "card": "#ffffff", "text": "#1f2328",
+                  "subtle": "#6b7280", "select": "#3478f6",
+                  "status_bg": "#ebedf0", "status_fg": "#374151"},
+        "dark": {"page": "#1d1d20", "card": "#27272a", "text": "#d7d7db",
+                 "subtle": "#9a9aa2", "select": "#3478f6",
+                 "status_bg": "#27272a", "status_fg": "#c6c6cb"},
+    }
+    theme_now = {"key": None}
+    cards = []
     style = ttk.Style()
     for theme in (("aqua", "vista") if not IS_WIN else ("vista", "aqua")):
         try:
@@ -1007,42 +1118,84 @@ def gui():
             break
         except tk.TclError:
             continue
-    style.configure("TFrame", background=bg)
-    style.configure("Title.TLabel", background=bg, font=(UI_FONT, 18, "bold"))
-    style.configure("Subtle.TLabel", background=bg, foreground="#6b7280", font=(UI_FONT, 11))
     style.configure("Big.TButton", font=(UI_FONT, 13, "bold"))
-    style.configure("Status.TFrame", background="#ebedf0")
-    style.configure("Status.TLabel", background="#ebedf0", foreground="#374151",
-                    font=(UI_FONT, 11))
-    style.configure("Treeview", rowheight=30, background=card_bg,
-                    fieldbackground=card_bg, borderwidth=0, font=(UI_FONT, 12))
-    style.configure("Treeview.Heading", font=(UI_FONT, 11),
-                    background="#fafbfc", foreground="#6b7280")
-    style.map("Treeview",
-              background=[("selected", select_bg)],
-              foreground=[("selected", "#ffffff")])
+
+    def apply_theme(force=False):
+        name = cfg.get("theme", "auto")
+        if name == "auto":
+            name = "dark" if system_dark() else "light"
+        if not force and theme_now["key"] == name:
+            return
+        theme_now["key"] = name
+        pal = PALETTES[name]
+        root.configure(background=pal["page"])
+        style.configure("TFrame", background=pal["page"])
+        style.configure("Title.TLabel", background=pal["page"],
+                        foreground=pal["text"], font=(UI_FONT, 18, "bold"))
+        style.configure("Subtle.TLabel", background=pal["page"],
+                        foreground=pal["subtle"], font=(UI_FONT, 11))
+        style.configure("Status.TFrame", background=pal["status_bg"])
+        style.configure("Status.TLabel", background=pal["status_bg"],
+                        foreground=pal["status_fg"], font=(UI_FONT, 11))
+        style.configure("Treeview", rowheight=30, background=pal["card"],
+                        fieldbackground=pal["card"], foreground=pal["text"],
+                        borderwidth=0, font=(UI_FONT, 12))
+        style.configure("Treeview.Heading", font=(UI_FONT, 11),
+                        background=pal["card"], foreground=pal["subtle"])
+        style.map("Treeview",
+                  background=[("selected", pal["select"])],
+                  foreground=[("selected", "#ffffff")])
+        tree.tag_configure("selrow", background=pal["select"], foreground="#ffffff")
+        log_box.configure(background=pal["card"], foreground=pal["text"],
+                          insertbackground=pal["text"])
+        paned.configure(background=pal["page"])
+        for card in cards:
+            card.retheme(pal)
+
+    def watch_theme():
+        # 「跟随系统」时每分钟检查一次系统外观变化
+        if cfg.get("theme", "auto") == "auto":
+            apply_theme()
+        root.after(60000, watch_theme)
 
     class Card(tk.Canvas):
-        """白底圆角卡片（VS Code 风格），内容放进 .body"""
+        """无边框圆角卡片（macOS 访达风格），内容放进 .body。
+        圆角用两块矩形 + 四个四分之一圆拼出，边角是真正的圆弧。"""
 
         def __init__(self, master):
-            super().__init__(master, bg=bg, highlightthickness=0, bd=0)
-            self.body = tk.Frame(self, bg=card_bg)
+            super().__init__(master, highlightthickness=0, bd=0)
+            self._items = [
+                self.create_rectangle(0, 0, 0, 0, outline=""),
+                self.create_rectangle(0, 0, 0, 0, outline=""),
+                self.create_arc(0, 0, 0, 0, start=0, extent=90, outline=""),
+                self.create_arc(0, 0, 0, 0, start=90, extent=90, outline=""),
+                self.create_arc(0, 0, 0, 0, start=180, extent=90, outline=""),
+                self.create_arc(0, 0, 0, 0, start=270, extent=90, outline=""),
+            ]
+            self.body = tk.Frame(self)
             self.body.pack_propagate(False)
-            self._rect = self.create_polygon((0, 0), fill=card_bg,
-                                             outline=card_border, smooth=True)
             self._win = self.create_window(0, 0, window=self.body, anchor="nw")
-            self.tag_lower(self._rect)
             self.bind("<Configure>", self._on_resize)
+            cards.append(self)
+
+        def retheme(self, pal):
+            self.configure(background=pal["page"])
+            self.body.configure(background=pal["card"])
+            for item in self._items:
+                self.itemconfigure(item, fill=pal["card"])
 
         def _on_resize(self, _event):
             w, h = self.winfo_width(), self.winfo_height()
-            r = 9
-            pts = [r, 0, w - r, 0, w, 0, w, r, w, h - r, w, h,
-                   w - r, h, r, h, 0, h, 0, h - r, 0, r, 0, 0]
-            self.coords(self._rect, *pts)
-            self.coords(self._win, 9, 9)
-            self.itemconfigure(self._win, width=max(20, w - 18), height=max(20, h - 18))
+            r = 10
+            rect_h, rect_v, ne, nw, sw, se = self._items
+            self.coords(rect_h, r, 0, w - r, h)
+            self.coords(rect_v, 0, r, w, h - r)
+            self.coords(ne, w - 2 * r, 0, w, 2 * r)
+            self.coords(nw, 0, 0, 2 * r, 2 * r)
+            self.coords(sw, 0, h - 2 * r, 2 * r, h)
+            self.coords(se, w - 2 * r, h - 2 * r, w, h)
+            self.coords(self._win, 6, 6)
+            self.itemconfigure(self._win, width=max(20, w - 12), height=max(20, h - 12))
 
     # 0 顶部：标题 + 当前账号
     head = ttk.Frame(root, padding=(18, 14, 18, 6))
@@ -1053,8 +1206,8 @@ def gui():
         side="left", padx=(16, 0), pady=(6, 0))
 
     # 1 账号列表 + 日志：圆角卡片，中间分隔条可拖动
-    paned = tk.PanedWindow(root, orient="vertical", sashwidth=7, sashrelief="flat",
-                           bd=0, showhandle=False, background=bg, opaqueresize=True)
+    paned = tk.PanedWindow(root, orient="vertical", sashwidth=6, sashrelief="flat",
+                           bd=0, showhandle=False, opaqueresize=True)
     paned.grid(row=1, column=0, sticky="nsew", padx=14, pady=(4, 0))
     list_card = Card(paned)
     log_card = Card(paned)
@@ -1076,25 +1229,19 @@ def gui():
     tree.configure(yscrollcommand=vsb.set)
     tree.grid(row=0, column=0, sticky="nsew")
     vsb.grid(row=0, column=1, sticky="ns")
-    # 选中行访达式深蓝（style.map 在个别主题不生效时由 selrow 兜底）
-    tree.tag_configure("selrow", background=select_bg, foreground="#ffffff")
 
     log_box = tk.Text(log_card.body, height=4, wrap="word", state="disabled",
-                      background=card_bg, relief="flat", borderwidth=0,
-                      highlightthickness=0, padx=10, pady=8, font=(MONO_FONT, 10))
+                      relief="flat", borderwidth=0, highlightthickness=0,
+                      padx=10, pady=8, font=(MONO_FONT, 10))
     log_box.pack(fill="both", expand=True)
 
-    # 2 工具栏
+    # 2 工具栏（其余操作都在右键菜单里）
     bar = ttk.Frame(root, padding=(18, 10, 18, 6))
     bar.grid(row=2, column=0, sticky="ew")
     btn_import = ttk.Button(bar, text="导入账号…")
     btn_import.pack(side="left")
     btn_capture = ttk.Button(bar, text="保存选中账号")
     btn_capture.pack(side="left", padx=(8, 0))
-    btn_export = ttk.Button(bar, text="导出选中…")
-    btn_export.pack(side="left", padx=(8, 0))
-    btn_restore = ttk.Button(bar, text="恢复备份…")
-    btn_restore.pack(side="left", padx=(8, 0))
     btn_switch = ttk.Button(bar, text="切换账号 ▶", style="Big.TButton")
     btn_switch.pack(side="right", ipady=3)
 
@@ -1106,14 +1253,11 @@ def gui():
               anchor="w").pack(side="left", fill="x", expand=True, padx=(10, 0))
     btn_settings = ttk.Button(status_bar, text="设置…", width=7)
     btn_settings.pack(side="right", padx=(4, 6), pady=3)
-    btn_folder = ttk.Button(status_bar, text="数据目录", width=9)
-    btn_folder.pack(side="right", padx=4, pady=3)
-    btn_log = ttk.Button(status_bar, text="隐藏日志 ▾", width=10)
+    btn_log = ttk.Button(status_bar, text="隐藏日志", width=9)
     btn_log.pack(side="right", padx=4, pady=3)
 
     busy = {"value": False}
-    buttons = [btn_switch, btn_import, btn_capture, btn_export, btn_restore,
-               btn_settings, btn_folder]
+    buttons = [btn_switch, btn_import, btn_capture]
     log_ui = {"hidden": False, "sash": 0}
     timer = {"id": None}
 
@@ -1145,7 +1289,7 @@ def gui():
         log_ui["sash"] = sash_get()
         paned.forget(log_card)
         log_ui["hidden"] = True
-        btn_log.configure(text="显示日志 ▸")
+        btn_log.configure(text="显示日志")
 
     def expand_log():
         if not log_ui["hidden"]:
@@ -1154,10 +1298,15 @@ def gui():
         pos = log_ui["sash"] or max(220, paned.winfo_height() - 170)
         root.after_idle(lambda: sash_set(pos))
         log_ui["hidden"] = False
-        btn_log.configure(text="隐藏日志 ▾")
+        btn_log.configure(text="隐藏日志")
 
     def toggle_log():
         collapse_log() if not log_ui["hidden"] else expand_log()
+
+    def on_pane_motion(_event):
+        # 像 VS Code 一样：拖到底线立即收起，不用等松开鼠标
+        if not log_ui["hidden"] and log_card.winfo_height() <= 38:
+            collapse_log()
 
     def on_sash_release(_event):
         if not log_ui["hidden"] and log_card.winfo_height() <= 40:
@@ -1171,6 +1320,31 @@ def gui():
             if iid in sel:
                 tags.append("selrow")
             tree.item(iid, tags=tags)
+
+    # 拖动框选（macOS 原生 Treeview 不带橡皮筋选择，自己实现；
+    # 按住 Shift / Ctrl / Command 时不介入，交给系统行为）
+    drag_sel = {"anchor": None, "active": False}
+
+    def on_tree_press(event):
+        drag_sel["anchor"] = tree.identify_row(event.y) or None
+        drag_sel["active"] = False
+
+    def on_tree_motion(event):
+        if event.state & 0x000D or not drag_sel["anchor"] or busy["value"]:
+            return
+        iid = tree.identify_row(event.y)
+        if not iid:
+            return
+        if iid != drag_sel["anchor"]:
+            drag_sel["active"] = True
+        if not drag_sel["active"]:
+            return
+        kids = tree.get_children()
+        try:
+            a, b = kids.index(drag_sel["anchor"]), kids.index(iid)
+        except ValueError:
+            return
+        tree.selection_set(kids[min(a, b):max(a, b) + 1])
 
     def refresh(select_uids=None):
         sel = tree.selection()
@@ -1360,6 +1534,77 @@ def gui():
                    % (account_label(doc), fmt_ts(expiry_of(doc))))
         status_var.set("已保存 %s" % account_label(doc))
 
+    def on_refresh(_event=None):
+        """手动刷新有效期：明文档案联网换新 token；当前登录顺便重读归档"""
+        if busy["value"]:
+            return
+        sel = tree.selection()
+        pmap = profile_map()
+        items = [(pmap[i]["uid"], pmap[i]["doc"]) for i in sel if i in pmap]
+        if not items:
+            status_var.set("请先选择要刷新的账号")
+            return
+        q = queue.Queue()
+        refreshed = set()
+
+        def worker():
+            for uid, doc in items:
+                try:
+                    doc = refresh_profile_tokens(doc)
+                except (ValueError, RuntimeError, OSError) as e:
+                    q.put(("log", "%s：未续期（%s）"
+                           % (account_label(doc), str(e).splitlines()[0][:60])))
+                    continue
+                try:
+                    write_info(doc, os.path.join(PROFILE_DIR, "%s.json" % safe_uid(uid)))
+                    refreshed.add(uid)
+                    q.put(("log", "%s：已联网续期至 %s"
+                           % (account_label(doc), fmt_ts(expiry_of(doc)))))
+                except OSError as e:
+                    q.put(("log", "%s：续期成功但保存失败（%s）" % (account_label(doc), e)))
+            q.put(("done", None))
+
+        set_busy(True)
+        status_var.set("正在刷新有效期…")
+        append_log("—— 刷新有效期（%d 个账号）——" % len(items))
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            finished = False
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == "log":
+                        append_log(payload)
+                        status_var.set(payload)
+                    elif kind == "done":
+                        finished = True
+                        # 当前登录的账号重读一次登录文件归档（客户端可能已自行续期）；
+                        # 刚联网续期过的不再覆盖，避免用旧 token 盖掉新 token
+                        cur = read_info()
+                        if cur and account_uid(cur) not in refreshed:
+                            before = expiry_of(cur)
+                            try:
+                                _, captured = capture_current()
+                                after = expiry_of(captured)
+                                append_log("当前登录归档已更新（有效期至 %s）"
+                                           % fmt_ts(after))
+                                if after == before and not refreshed:
+                                    append_log("说明：token 离到期还远时，客户端不会向"
+                                               "服务器换新 token，有效期不变属正常；"
+                                               "临近到期时再切换登录一次即可滚动续期。")
+                            except (OSError, ValueError):
+                                pass
+                        refresh([u for u, _ in items])
+                        set_busy(False)
+                        status_var.set("刷新完成")
+            except queue.Empty:
+                pass
+            if not finished and busy["value"]:
+                root.after(120, poll)
+
+        root.after(120, poll)
+
     def on_delete():
         if busy["value"]:
             return
@@ -1458,6 +1703,7 @@ def gui():
         lb.bind("<Double-1>", pick)
         win.protocol("WM_DELETE_WINDOW", close)
 
+    THEME_LABELS = [("跟随系统", "auto"), ("浅色", "light"), ("深色", "dark")]
     INTERVALS = [("30 分钟", 30), ("1 小时", 60), ("3 小时", 180),
                  ("6 小时", 360), ("12 小时", 720), ("每天", 1440)]
 
@@ -1470,6 +1716,9 @@ def gui():
         win.transient(root)
         body = ttk.Frame(win, padding=16)
         body.pack(fill="both", expand=True)
+        theme_now_label = dict((v, k) for k, v in THEME_LABELS).get(
+            cfg.get("theme", "auto"), "跟随系统")
+        theme_var = tk.StringVar(value=theme_now_label)
         auto_var = tk.BooleanVar(value=bool(cfg.get("auto_refresh", True)))
         minutes = int(cfg.get("auto_refresh_minutes", 60) or 60)
         interval_var = tk.StringVar(
@@ -1477,39 +1726,51 @@ def gui():
         restart_var = tk.BooleanVar(value=bool(cfg.get("restart_after_switch", True)))
         ide_var = tk.BooleanVar(value=bool(cfg.get("switch_ide", True)))
 
+        row0 = ttk.Frame(body)
+        row0.grid(row=0, column=0, sticky="w")
+        ttk.Label(row0, text="外观：").pack(side="left")
+        ttk.Combobox(row0, textvariable=theme_var, state="readonly", width=10,
+                     values=[lbl for lbl, _ in THEME_LABELS]).pack(side="left")
         ttk.Checkbutton(body, text="定时刷新当前账号有效期"
                         "（客户端自动续期后，工具把新 token 归档）",
-                        variable=auto_var).grid(row=0, column=0, sticky="w")
+                        variable=auto_var).grid(row=1, column=0, sticky="w",
+                                                pady=(12, 0))
         row1 = ttk.Frame(body)
-        row1.grid(row=1, column=0, sticky="w", pady=(4, 0), padx=(24, 0))
+        row1.grid(row=2, column=0, sticky="w", pady=(4, 0), padx=(24, 0))
         ttk.Label(row1, text="刷新间隔：").pack(side="left")
         ttk.Combobox(row1, textvariable=interval_var, state="readonly", width=10,
                      values=[lbl for lbl, _ in INTERVALS]).pack(side="left")
         ttk.Checkbutton(body, text="切换后自动重启客户端",
-                        variable=restart_var).grid(row=2, column=0,
+                        variable=restart_var).grid(row=3, column=0,
                                                    sticky="w", pady=(10, 0))
         ttk.Checkbutton(body, text="同步切换 CodeBuddy IDE 登录",
-                        variable=ide_var).grid(row=3, column=0, sticky="w", pady=(6, 0))
+                        variable=ide_var).grid(row=4, column=0, sticky="w", pady=(6, 0))
 
         def save():
+            cfg["theme"] = dict(THEME_LABELS)[theme_var.get()]
             cfg["auto_refresh"] = auto_var.get()
             cfg["auto_refresh_minutes"] = dict(INTERVALS)[interval_var.get()]
             cfg["restart_after_switch"] = restart_var.get()
             cfg["switch_ide"] = ide_var.get()
             save_config(cfg)
             schedule_auto()
+            apply_theme(force=True)
             win.destroy()
             status_var.set("设置已保存")
 
         btns = ttk.Frame(body)
-        btns.grid(row=4, column=0, sticky="e", pady=(12, 0))
+        btns.grid(row=5, column=0, sticky="e", pady=(12, 0))
         ttk.Button(btns, text="确定", command=save).pack(side="left")
         ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=(8, 0))
 
     menu = tk.Menu(tree, tearoff=0)
     menu.add_command(label="切换到该账号", command=on_switch)
+    menu.add_command(label="刷新有效期", command=on_refresh)
     menu.add_command(label="导出选中账号…", command=on_export)
     menu.add_command(label="删除选中档案", command=on_delete)
+    menu.add_separator()
+    menu.add_command(label="恢复备份…", command=on_restore)
+    menu.add_command(label="打开数据目录", command=lambda: reveal_path(STORE))
 
     def on_menu(event):
         iid = tree.identify_row(event.y)
@@ -1521,24 +1782,26 @@ def gui():
     btn_switch.configure(command=on_switch)
     btn_import.configure(command=on_import)
     btn_capture.configure(command=on_capture)
-    btn_export.configure(command=on_export)
-    btn_restore.configure(command=on_restore)
     btn_settings.configure(command=on_settings)
-    btn_folder.configure(command=lambda: reveal_path(STORE))
     btn_log.configure(command=toggle_log)
+    paned.bind("<B1-Motion>", on_pane_motion)
     paned.bind("<ButtonRelease-1>", on_sash_release)
     tree.bind("<Double-1>", on_switch)
     tree.bind("<Return>", on_switch)
     tree.bind("<Button-3>", on_menu)
     tree.bind("<<TreeviewSelect>>", on_select)
+    tree.bind("<Button-1>", on_tree_press, add="+")
+    tree.bind("<B1-Motion>", on_tree_motion, add="+")
 
+    apply_theme(force=True)
     refresh()
     append_log("数据目录：%s" % STORE)
-    append_log("用法：导入账号 → 双击列表切换；按住 Ctrl / Command 可多选，"
-               "多选后可导出或删除。")
+    append_log("用法：双击列表切换；拖动或按住 Ctrl / Command 多选，"
+               "右键可刷新有效期、导出、删除。")
     append_log("提示：首次同步 IDE 时如弹出钥匙串授权，请点「始终允许」。")
     root.after(150, lambda: sash_set(max(220, paned.winfo_height() - 165)))
     schedule_auto()
+    watch_theme()
     root.mainloop()
 
 
@@ -1554,6 +1817,7 @@ def cli(argv):
               "  buddy_switch.py import <file.json>    # 导入账号\n"
               "  buddy_switch.py capture               # 保存当前账号\n"
               "  buddy_switch.py switch <uid|file> [--no-restart] [--no-ide] [--dry-run]\n"
+              "  buddy_switch.py refresh <uid|file>        # 联网续期（需明文 token 档案）\n"
               "  buddy_switch.py backups               # 列出备份")
         return 0
 
@@ -1602,6 +1866,27 @@ def cli(argv):
                               dry_run=("--dry-run" in argv),
                               progress=print):
             print(line)
+        return 0
+    if cmd == "refresh" and len(argv) > 1:
+        key = argv[1]
+        doc = None
+        if os.path.exists(os.path.expanduser(key)):
+            doc = read_json(resolve_user_file(key))
+        else:
+            for p in list_profiles():
+                if p["uid"] == key or p["label"] == key:
+                    doc = p["doc"]
+                    break
+            if doc is None:
+                print("找不到账号：%s" % key)
+                return 1
+        doc = refresh_profile_tokens(doc)
+        if os.path.exists(os.path.expanduser(key)):
+            print("已续期（未写回档案，请用 import 保存）")
+        else:
+            write_info(doc, os.path.join(PROFILE_DIR, "%s.json"
+                                         % safe_uid(account_uid(doc))))
+            print("已联网续期并保存，有效期至 %s" % fmt_ts(expiry_of(doc)))
         return 0
     print("未知命令，使用 --help 查看用法")
     return 2

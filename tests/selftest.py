@@ -86,12 +86,40 @@ class DocLogicTest(unittest.TestCase):
 
 class LabelTest(unittest.TestCase):
     @staticmethod
-    def _jwt_with(username):
+    def _jwt_with(username, extra=None):
         import base64
+        claims = {"exp": 1999999999, "preferred_username": username}
+        claims.update(extra or {})
         payload = base64.urlsafe_b64encode(
-            json.dumps({"exp": 1999999999, "preferred_username": username})
-            .encode()).decode().rstrip("=")
+            json.dumps(claims).encode()).decode().rstrip("=")
         return "h.%s.s" % payload
+
+    def test_token_endpoint_derivation(self):
+        doc = {"auth": {"refreshToken": self._jwt_with(
+            "u", {"iss": "https://www.codebuddy.cn/auth/realms/copilot",
+                  "azp": "console"})}}
+        url, client = bs.token_endpoint_of(doc)
+        self.assertEqual(url,
+                         "https://www.codebuddy.cn/auth/realms/copilot/protocol/openid-connect/token")
+        self.assertEqual(client, "console")
+
+    def test_token_endpoint_none_for_encrypted(self):
+        doc = {"auth": {"refreshToken": {"$wbEncrypted": 1}}}
+        self.assertEqual(bs.token_endpoint_of(doc), (None, None))
+
+    def test_token_endpoint_rejects_unknown_host(self):
+        doc = {"auth": {"refreshToken": self._jwt_with(
+            "u", {"iss": "https://evil.example.com/auth/realms/copilot",
+                  "azp": "console"})}}
+        with self.assertRaises(ValueError):
+            bs.token_endpoint_of(doc)
+
+    def test_token_endpoint_rejects_http(self):
+        doc = {"auth": {"refreshToken": self._jwt_with(
+            "u", {"iss": "http://www.codebuddy.cn/auth/realms/copilot",
+                  "azp": "console"})}}
+        with self.assertRaises(ValueError):
+            bs.token_endpoint_of(doc)
 
     def test_plaintext_nickname_wins(self):
         self.assertEqual(bs.account_label(fake_doc()), "测试账号 / 138****0000")
