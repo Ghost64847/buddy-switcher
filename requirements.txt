@@ -1,2 +1,2 @@
-PySide6>=6.5
+PySide6>=6.8  # 6.8 起支持 setColorScheme（设置里的浅色/深色切换）
 pyinstaller>=6.0

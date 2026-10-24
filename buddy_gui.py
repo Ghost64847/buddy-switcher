@@ -65,30 +65,87 @@ def run():
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName(bs.APP_NAME)
+    app.setApplicationVersion(bs.APP_VERSION)
     app.setOrganizationName("BuddySwitch")
+
+    def apply_theme():
+        """深浅外观：跟随系统（默认）/ 浅色 / 深色。
+        走 Qt 原生配色方案，macOS 上仍是 Aqua 原生样式，只换深浅。"""
+        scheme = {"light": QT.ColorScheme.Light,
+                  "dark": QT.ColorScheme.Dark}.get(cfg.get("theme", "auto"),
+                                                   QT.ColorScheme.Unknown)
+        try:
+            app.styleHints().setColorScheme(scheme)  # Unknown = 跟随系统
+        except (AttributeError, RuntimeError):
+            pass  # Qt < 6.8 没有该接口：只能跟随系统
+
+    apply_theme()
+
+    # 加载 Qt 自带中文翻译：macOS 左上角应用菜单（关于/设置/隐藏/退出…）、
+    # 文件对话框按钮等系统文案随之变中文
+    translator = QtCore.QTranslator()
+    tr_dirs = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        tr_dirs.append(Path(meipass) / "translations")
+    tr_dirs.append(Path(QtCore.QLibraryInfo.path(
+        QtCore.QLibraryInfo.LibraryPath.TranslationsPath)))
+    for tr_dir in tr_dirs:
+        if translator.load(QtCore.QLocale("zh_CN"), "qtbase", "_", str(tr_dir)):
+            app.installTranslator(translator)
+            break
+
+    class RowPanelProxyStyle(QtWidgets.QProxyStyle):
+        """macOS 的表格/列表会先自己画一层横跨整行的方形选中底
+        （PE_PanelItemViewRow），把委托画的访达式圆角盖住；选中时跳过它。"""
+
+        def drawPrimitive(self, element, option, painter, widget=None):
+            if (element == QtWidgets.QStyle.PE_PanelItemViewRow
+                    and option.state & QtWidgets.QStyle.State_Selected):
+                return
+            super().drawPrimitive(element, option, painter, widget)
+
+    app.setStyle(RowPanelProxyStyle())
     if not bs.IS_MAC:  # macOS 用 .app 包里的图标；其余平台设置窗口图标
         icon_path = _resource_path("assets/icon_1024.png")
         if icon_path:
             app.setWindowIcon(QtGui.QIcon(icon_path))
 
     class RoundedSelDelegate(QtWidgets.QStyledItemDelegate):
-        """访达式圆角选中：把默认的方形高亮画成圆角矩形"""
+        """访达式圆角选中：每行画一个横跨整行的圆角矩形。
+        表格里只在最左列画背景（其余列只把文字改成高亮前景色），
+        避免三个单元格各画一块拼成一条蓝带。"""
 
         def paint(self, painter, option, index):
-            from PySide6 import QtGui
             opt = QtWidgets.QStyleOptionViewItem(option)
             self.initStyleOption(opt, index)
-            state = opt.state
-            if state & QtWidgets.QStyle.State_Selected:
-                painter.save()
-                painter.setRenderHint(QtGui.QPainter.Antialiasing)
-                painter.setPen(QT.NoPen)
-                painter.setBrush(opt.palette.highlight())
-                painter.drawRoundedRect(opt.rect.adjusted(1, 1, -1, -1), 6, 6)
-                painter.restore()
+            if opt.state & QtWidgets.QStyle.State_Selected:
+                rect = opt.rect
+                draw_bg = True
+                view = opt.widget
+                hdr = (view.horizontalHeader()
+                       if isinstance(view, QtWidgets.QTableView) else None)
+                if hdr is not None and hdr.count() > 0:
+                    first = min(range(hdr.count()), key=hdr.visualIndex)
+                    if index.column() != first:
+                        draw_bg = False
+                    else:
+                        last = max(range(hdr.count()), key=hdr.visualIndex)
+                        left = view.columnViewportPosition(first)
+                        right = (view.columnViewportPosition(last)
+                                 + view.columnWidth(last))
+                        rect = QtCore.QRect(left, opt.rect.top(),
+                                            right - left, opt.rect.height())
+                if draw_bg:
+                    painter.save()
+                    painter.setRenderHint(QtGui.QPainter.Antialiasing)
+                    painter.setPen(QT.NoPen)
+                    painter.setBrush(opt.palette.highlight())
+                    painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 6, 6)
+                    painter.restore()
                 # 去掉选中态，避免再画一层方形高亮；文字改用高亮前景色
                 opt.state &= ~QtWidgets.QStyle.State_Selected
-                opt.palette.setColor(opt.palette.Text,
+                opt.palette.setColor(QtGui.QPalette.ColorRole.Text,
                                      opt.palette.highlightedText().color())
             opt.state &= ~QtWidgets.QStyle.State_HasFocus
             QtWidgets.QApplication.style().drawControl(
@@ -175,7 +232,6 @@ def run():
     header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
     header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)  # UID 占满剩余宽
     header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
-    header.setSectionsMovable(True)  # 像访达一样拖动表头左右换列
     table.setColumnWidth(0, 250)
     table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
     table.setStyleSheet("QTableWidget {background: transparent; border: none;}"
@@ -186,6 +242,7 @@ def run():
     log.setReadOnly(True)
     log.setMaximumBlockCount(2000)
     log.setMinimumHeight(96)
+    log.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)  # 长行折行，只上下滚动
     log.setStyleSheet("QPlainTextEdit {background: transparent; border: none;}")
 
     def make_card(inner, rounded=True, window_bg=False):
@@ -212,7 +269,7 @@ def run():
     splitter.setStretchFactor(1, 1)
     splitter.setCollapsible(0, False)
     splitter.setCollapsible(1, False)
-    splitter.setHandleWidth(14)
+    splitter.setHandleWidth(16)
     layout.addWidget(splitter, 1)
 
     win.setCentralWidget(central)
@@ -225,18 +282,19 @@ def run():
     btn_restore = QtWidgets.QPushButton("恢复备份")
     btn_switch = QtWidgets.QPushButton("切换账号")
     btn_settings = QtWidgets.QPushButton("设置")
+    btn_clearlog = QtWidgets.QPushButton("清除日志")
     btn_log = QtWidgets.QPushButton("隐藏日志")
     for b in (btn_import, btn_capture, btn_export, btn_restore):
         bar.addWidget(b)
     bar.addStretch(1)
-    for b in (btn_settings, btn_log, btn_switch):
+    for b in (btn_settings, btn_clearlog, btn_log, btn_switch):
         bar.addWidget(b)
     layout.addLayout(bar)
 
     busy = {"value": False}
     log_hidden = {"value": False}
     buttons = [btn_switch, btn_import, btn_capture, btn_export, btn_restore,
-               btn_settings, btn_log]
+               btn_settings, btn_clearlog, btn_log]
 
     def append_log(msg):
         log.appendPlainText(msg.rstrip())
@@ -290,7 +348,13 @@ def run():
             table.setItem(row, 1, QtWidgets.QTableWidgetItem(p["uid"]))
             table.setItem(row, 2, QtWidgets.QTableWidgetItem(exp))
             if p["uid"] in keep:
-                table.selectRow(row)  # 追加选择，保留多选
+                # 用选择模型追加（selectRow 会把多选清成单选）
+                sel = QtCore.QItemSelection(
+                    table.model().index(row, 0),
+                    table.model().index(row, table.columnCount() - 1))
+                table.selectionModel().select(
+                    sel, QtCore.QItemSelectionModel.Select
+                    | QtCore.QItemSelectionModel.Rows)
 
     def doc_of_row(row):
         try:
@@ -562,6 +626,8 @@ def run():
 
     INTERVALS = [("30 分钟", 30), ("1 小时", 60), ("3 小时", 180),
                  ("6 小时", 360), ("12 小时", 720), ("每天", 1440)]
+    THEMES = [("跟随系统（随 macOS 深浅色自动切换）", "auto"),
+              ("浅色", "light"), ("深色", "dark")]
 
     def on_settings(checked=False):
         if busy["value"]:
@@ -585,6 +651,11 @@ def run():
         scope_idx = next((i for i, (_, v) in enumerate(bs.SCOPE_LABELS)
                           if v == scope_now), 0)
         scope_box.setCurrentIndex(scope_idx)
+        theme_box = QtWidgets.QComboBox()
+        theme_box.addItems([lbl for lbl, _ in THEMES])
+        theme_idx = next((i for i, (_, v) in enumerate(THEMES)
+                          if v == cfg.get("theme", "auto")), 0)
+        theme_box.setCurrentIndex(theme_idx)
         form.addRow(auto_chk)
         box_row = QtWidgets.QWidget()
         box_lay = QtWidgets.QHBoxLayout(box_row)
@@ -593,6 +664,13 @@ def run():
         box_lay.addWidget(interval)
         box_lay.addStretch(1)
         form.addRow(box_row)
+        theme_row = QtWidgets.QWidget()
+        theme_lay = QtWidgets.QHBoxLayout(theme_row)
+        theme_lay.setContentsMargins(20, 0, 0, 0)
+        theme_lay.addWidget(QtWidgets.QLabel("外观："))
+        theme_lay.addWidget(theme_box)
+        theme_lay.addStretch(1)
+        form.addRow(theme_row)
         scope_row = QtWidgets.QWidget()
         scope_lay = QtWidgets.QHBoxLayout(scope_row)
         scope_lay.setContentsMargins(20, 0, 0, 0)
@@ -612,7 +690,9 @@ def run():
         cfg["auto_refresh_minutes"] = INTERVALS[interval.currentIndex()][1]
         cfg["restart_after_switch"] = restart_chk.isChecked()
         cfg["switch_scope"] = bs.SCOPE_LABELS[scope_box.currentIndex()][1]
+        cfg["theme"] = THEMES[theme_box.currentIndex()][1]
         bs.save_config(cfg)
+        apply_theme()
         schedule_auto()
         set_status("设置已保存")
 
@@ -737,14 +817,20 @@ def run():
         log_card.setVisible(not log_hidden["value"])
         btn_log.setText("显示日志" if log_hidden["value"] else "隐藏日志")
 
+    def on_clear_log(checked=False):
+        log.clear()
+
     def context_menu(pos):
         if busy["value"]:
             return
         item = table.itemAt(pos)
         if not item:
             return
-        table.clearSelection()
-        table.selectRow(item.row())
+        # 访达行为：右键点在已选中的行上时保留多选（导出/删除按全部选中算），
+        # 只有右键点到未选中的行才把选择换成这一行
+        if item.row() not in selected_rows():
+            table.clearSelection()
+            table.selectRow(item.row())
         menu = QtWidgets.QMenu(table)
         for text, handler in (("切换到该账号", on_switch),
                               ("刷新有效期", on_refresh_validity),
@@ -784,8 +870,21 @@ def run():
     m_acc.addAction("刷新有效期", on_refresh_validity)
     m_view = menubar.addMenu("显示")
     m_view.addAction("隐藏/显示日志", toggle_log, QtGui.QKeySequence("Ctrl+L"))
-    m_view.addAction("设置…", on_settings,
-                     QtGui.QKeySequence.StandardKey.Preferences)
+    m_view.addAction("清除日志", on_clear_log, QtGui.QKeySequence("Ctrl+K"))
+    # 设置/关于用菜单角色放进 macOS 应用菜单（顶部第一条），其余平台停在菜单栏上
+    act_settings = QtGui.QAction("设置…", win)
+    act_settings.setMenuRole(QtGui.QAction.MenuRole.PreferencesRole)
+    act_settings.setShortcut(QtGui.QKeySequence.StandardKey.Preferences)
+    act_settings.triggered.connect(on_settings)
+    menubar.addAction(act_settings)
+    act_about = QtGui.QAction("关于 Buddy Switcher", win)
+    act_about.setMenuRole(QtGui.QAction.MenuRole.AboutRole)
+    act_about.triggered.connect(lambda: QtWidgets.QMessageBox.about(
+        win, "关于 Buddy Switcher",
+        "Buddy Switcher v%s（Buddy 切号器）\n"
+        "WorkBuddy / CodeBuddy 多账号一键切换\n\n数据目录：%s"
+        % (bs.APP_VERSION, bs.STORE)))
+    menubar.addAction(act_about)
 
     btn_switch.clicked.connect(on_switch)
     btn_import.clicked.connect(on_import)
@@ -793,6 +892,7 @@ def run():
     btn_export.clicked.connect(on_export)
     btn_restore.clicked.connect(on_restore)
     btn_settings.clicked.connect(on_settings)
+    btn_clearlog.clicked.connect(on_clear_log)
     btn_log.clicked.connect(toggle_log)
     win.files_dropped.connect(import_files)  # 拖 json 进窗口即导入
 

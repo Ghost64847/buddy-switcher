@@ -49,16 +49,22 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          TR="$(python -c 'import PySide6,os;print(os.path.join(os.path.dirname(PySide6.__file__),"Qt","translations"))')"
           pyinstaller --noconfirm --clean --onedir --windowed --name BuddySwitcher \
             --icon assets/icon.ico \
-            --add-data "assets/icon_1024.png;assets" buddy_switch.py
+            --add-data "assets/icon_1024.png;assets" \
+            --add-data "$TR/qtbase_zh_CN.qm;translations" \
+            --add-data "$TR/qt_zh_CN.qm;translations" buddy_switch.py
           7z a BuddySwitcher-Windows.zip ./dist/BuddySwitcher
 
       - name: Build (Linux binary + tar.gz)
         if: runner.os == 'Linux'
         run: |
+          TR="$(python -c 'import PySide6,os;print(os.path.join(os.path.dirname(PySide6.__file__),"Qt","translations"))')"
           pyinstaller --noconfirm --clean --onedir --name BuddySwitcher \
-            --add-data "assets/icon_1024.png:assets" buddy_switch.py
+            --add-data "assets/icon_1024.png:assets" \
+            --add-data "$TR/qtbase_zh_CN.qm:translations" \
+            --add-data "$TR/qt_zh_CN.qm:translations" buddy_switch.py
           tar -czf BuddySwitcher-Linux-x86_64.tar.gz -C dist BuddySwitcher
           ./dist/BuddySwitcher/BuddySwitcher --help >/dev/null
 
