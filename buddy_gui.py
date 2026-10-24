@@ -597,7 +597,6 @@ def run():
         dlg.setWindowTitle("设置")
         form = QtWidgets.QFormLayout(dlg)
         ver = QtWidgets.QLabel("版本：v%s" % bs.APP_VERSION)
-        ver.setEnabled(False)  # 弱化显示，只作信息标注
         form.addRow(ver)
         auto_chk = QtWidgets.QCheckBox(
             "定时刷新当前账号有效期（客户端自动续期后，工具把新 token 归档）")

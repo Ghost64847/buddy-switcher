@@ -69,6 +69,7 @@ jobs:
           pyinstaller --noconfirm --clean --onedir --windowed --name BuddySwitcher \
             --icon assets/icon.ico \
             --add-data "assets/icon_1024.png;assets" $QM_ARGS buddy_switch.py
+          python scripts/prune_qt.py dist/BuddySwitcher
           7z a BuddySwitcher-Windows.zip ./dist/BuddySwitcher
 
       - name: Build (Linux binary + tar.gz)
@@ -87,6 +88,7 @@ jobs:
           ")"
           pyinstaller --noconfirm --clean --onedir --name BuddySwitcher \
             --add-data "assets/icon_1024.png:assets" $QM_ARGS buddy_switch.py
+          python scripts/prune_qt.py dist/BuddySwitcher
           tar -czf BuddySwitcher-Linux-x86_64.tar.gz -C dist BuddySwitcher
           ./dist/BuddySwitcher/BuddySwitcher --help >/dev/null
 

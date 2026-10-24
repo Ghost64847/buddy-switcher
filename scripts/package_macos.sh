@@ -30,8 +30,22 @@ print(' '.join(args))
 PYEOF
 )"
 
+# 瘦身：widget 应用不需要 QML/PDF/虚拟键盘/OpenGL/网络等模块
+EXCLUDE_ARGS=""
+for m in PySide6.QtQml PySide6.QtQuick PySide6.QtQuickWidgets PySide6.QtPdf \
+         PySide6.QtPdfWidgets PySide6.QtOpenGL PySide6.QtOpenGLWidgets \
+         PySide6.QtVirtualKeyboard PySide6.QtNetwork PySide6.QtDBus \
+         PySide6.QtSql PySide6.QtTest PySide6.QtStateMachine PySide6.QtXml \
+         PySide6.QtPrintSupport PySide6.QtCharts PySide6.QtDataVisualization \
+         PySide6.QtMultimedia PySide6.QtWebEngineCore PySide6.QtWebEngineWidgets; do
+    EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude-module $m"
+done
+
 "$PY" -m PyInstaller --noconfirm --clean --windowed --name "$APP_NAME" \
-    $ICON_ARGS $TR_ARGS buddy_switch.py
+    $ICON_ARGS $TR_ARGS $EXCLUDE_ARGS buddy_switch.py
+
+# 瘦身：剪掉虚拟键盘/QML/PDF/网络等无引用插件与框架（widget 应用不用）
+"$PY" scripts/prune_qt.py "dist/$APP_NAME.app"
 
 # 中文化：让访达/系统弹窗跟随系统语言显示中文（未声明本地化的 app 默认英文）
 "$PY" - <<'EOF'
