@@ -68,6 +68,10 @@ def run():
     app.setApplicationVersion(bs.APP_VERSION)
     app.setOrganizationName("BuddySwitch")
 
+    _ui_font = app.font()
+    _ui_font.setFamily(bs.UI_FONT)  # 全局固定界面字体，避免各处粗细不一
+    app.setFont(_ui_font)
+
     def apply_theme():
         """深浅外观：跟随系统（默认）/ 浅色 / 深色。
         走 Qt 原生配色方案，macOS 上仍是 Aqua 原生样式，只换深浅。"""
@@ -174,7 +178,7 @@ def run():
             return DotHandle(self.orientation(), self)
 
     table = QtWidgets.QTableWidget(0, 3)
-    table.setHorizontalHeaderLabels(["账号（双击切换，可多选）", "UID", "有效期至"])
+    table.setHorizontalHeaderLabels(["账号", "UID", "有效期至"])
     table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
     table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
     table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -183,9 +187,9 @@ def run():
     table.setContextMenuPolicy(QT.CustomContextMenu)
     table.verticalHeader().setVisible(False)
     header = table.horizontalHeader()
-    header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
-    header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)  # UID 占满剩余宽
-    header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+    # 像访达一样：三列都可以拖列边界左右调宽，最后一列占满剩余宽
+    header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+    header.setStretchLastSection(True)
     table.setColumnWidth(0, 250)
     table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
     table.setStyleSheet("QTableWidget {background: transparent; border: none;}"
@@ -197,6 +201,9 @@ def run():
     log.setMaximumBlockCount(2000)
     log.setMinimumHeight(96)
     log.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)  # 长行折行，只上下滚动
+    _log_font = log.font()
+    _log_font.setFamily(bs.MONO_FONT)  # 固定等宽字体，避免深浅切换后粗细漂移
+    log.setFont(_log_font)
     log.setStyleSheet("QPlainTextEdit {background: transparent; border: none;}")
 
     def make_card(inner, rounded=True, window_bg=False):
@@ -648,7 +655,7 @@ def run():
         bs.save_config(cfg)
         apply_theme()
         schedule_auto()
-        set_status("设置已保存")
+        # 保存成功不再写日志（点确定本身就是确认，多次改设置会刷屏）
 
     def on_restore(checked=False):
         if busy["value"]:
@@ -863,6 +870,7 @@ def run():
     auto_timer.timeout.connect(auto_capture_quiet)
 
     refresh()
+    table.resizeColumnToContents(1)  # UID 列初始按内容定宽（之后可拖边界调）
     append_log("数据目录：%s" % bs.STORE)
     append_log("用法：双击列表切换；拖动或按住 Ctrl / Command 多选，"
                "右键可刷新有效期、导出、删除。")
