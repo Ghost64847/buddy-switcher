@@ -170,9 +170,8 @@ def run():
     header.setStretchLastSection(True)
     table.setColumnWidth(0, 250)
     table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
-    table.setStyleSheet("QTableWidget {background: transparent; border: none;}"
-                        "QHeaderView::section {background: transparent; border: none;}"
-                        "QTableCornerButton::section {border: none;}")
+    table.setStyleSheet("QTableWidget {background: transparent; border: none;}")
+    # 表头不加任何样式表覆盖：保留 Aqua 原生样式（含访达式的列分隔竖线）
 
     log = QtWidgets.QPlainTextEdit()
     log.setReadOnly(True)
