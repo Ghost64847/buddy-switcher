@@ -30,6 +30,9 @@ from datetime import datetime
 from pathlib import Path
 
 IS_WIN = (os.name == "nt")
+# Windows 上无控制台的 GUI 程序调 tasklist/taskkill 等控制台命令会弹黑窗，
+# 所有子进程统一带上 CREATE_NO_WINDOW（非 Windows 平台为 0，无副作用）
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 IS_LINUX = (not IS_WIN) and (sys.platform.startswith("linux")
                              or sys.platform.startswith("freebsd"))
 IS_MAC = (not IS_WIN) and (not IS_LINUX)
@@ -839,7 +842,8 @@ if IS_WIN:
     def _tasklist_names():
         try:
             r = subprocess.run(["tasklist", "/NH", "/FO", "CSV"],
-                               capture_output=True, text=True, timeout=15)
+                               capture_output=True, text=True, timeout=15,
+                               creationflags=_NO_WINDOW)
         except OSError:
             return set()
         names = set()
@@ -862,7 +866,8 @@ if IS_WIN:
         if progress:
             progress("正在退出 %s…" % app["name"])
         for exe in exes:  # 先温和关闭
-            subprocess.run(["taskkill", "/IM", exe, "/T"], capture_output=True)
+            subprocess.run(["taskkill", "/IM", exe, "/T"], capture_output=True,
+                           creationflags=_NO_WINDOW)
         deadline = time.time() + 10
         while time.time() < deadline:
             if not app_running(app):
@@ -870,7 +875,8 @@ if IS_WIN:
                 return True
             time.sleep(0.5)
         for exe in exes:  # 再强制结束
-            subprocess.run(["taskkill", "/IM", exe, "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/IM", exe, "/T", "/F"],
+                           capture_output=True, creationflags=_NO_WINDOW)
         time.sleep(1)
         ok = not app_running(app)
         log("%s %s" % (app["name"], "已退出" if ok else "无法退出，请手动关闭"))
@@ -927,7 +933,8 @@ elif IS_LINUX:
         for p in app.get("launch", []):
             if os.path.exists(p):
                 subprocess.Popen([p], stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+                                 stderr=subprocess.DEVNULL,
+                                 creationflags=_NO_WINDOW)
                 log("启动 %s" % app["name"])
                 return
         log("未找到 %s 的启动路径（可在 config.json 的 apps 里配置）。" % app["name"])
