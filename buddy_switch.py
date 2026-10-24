@@ -1096,30 +1096,13 @@ def gui():
 
     root = tk.Tk()
     root.title(APP_NAME)
-    root.geometry("780x580")
-    root.minsize(680, 480)
+    root.geometry("780x560")
+    root.minsize(680, 460)
     root.columnconfigure(0, weight=1)
-    root.rowconfigure(1, weight=1)   # 列表 + 日志（拖动分隔条调整占比）
+    root.rowconfigure(1, weight=1)   # 账号列表 + 日志（可拖动分隔条）
 
-    # 跟随系统：全部用 macOS 官方系统色，深浅切换和系统一致、不割裂；
-    # 浅色/深色是手动覆盖（Windows 或想固定外观时用）
-    SYS_PALETTE = {
-        "page": "systemUnderPageBackgroundColor",
-        "card": "systemWindowBackgroundColor",
-        "text": "systemLabelColor",
-        "subtle": "systemSecondaryLabelColor",
-        "select": "systemControlAccentColor",
-    }
-    MANUAL_PALETTES = {
-        "light": {"page": "#f5f6f8", "card": "#ffffff", "text": "#1f2328",
-                  "subtle": "#6b7280", "select": "#3478f6"},
-        "dark": {"page": "#1d1d20", "card": "#27272a", "text": "#d7d7db",
-                 "subtle": "#9a9aa2", "select": "#3478f6"},
-    }
-    if IS_WIN:  # Windows 没有系统色名，跟随系统时手动选调色板
-        SYS_PALETTE = MANUAL_PALETTES["light"]
-    theme_now = {"key": None}
-    cards = []
+    # 全部使用系统原生控件：macOS 上不自定义任何颜色/字体/形状，
+    # 深浅色随系统自动切换、兼容各 macOS 版本；Windows 无系统配色，手动适配
     style = ttk.Style()
     for theme in (("aqua", "vista") if not IS_WIN else ("vista", "aqua")):
         try:
@@ -1127,130 +1110,84 @@ def gui():
             break
         except tk.TclError:
             continue
-    style.configure("Big.TButton", font=(UI_FONT, 13, "bold"))
 
-    def current_palette():
-        pal = MANUAL_PALETTES.get(cfg.get("theme", "auto"))
-        if pal:
-            return pal
-        if IS_WIN:
-            return MANUAL_PALETTES["dark" if system_dark() else "light"]
-        return SYS_PALETTE
+    if IS_WIN:
+        WIN_PALETTES = {
+            "light": {"page": "#f0f0f0", "card": "#ffffff", "text": "#1f1f1f",
+                      "subtle": "#5f5f5f"},
+            "dark": {"page": "#202020", "card": "#2b2b2b", "text": "#f0f0f0",
+                     "subtle": "#a0a0a0"},
+        }
+        theme_now = {"key": None}
 
-    def apply_theme(force=False):
-        pal = current_palette()
-        key = cfg.get("theme", "auto")
-        if not force and theme_now["key"] == key:
-            return
-        theme_now["key"] = key
-        root.configure(background=pal["page"])
-        style.configure("TFrame", background=pal["page"])
-        style.configure("Title.TLabel", background=pal["page"],
-                        foreground=pal["text"], font=(UI_FONT, 18, "bold"))
-        style.configure("Subtle.TLabel", background=pal["page"],
-                        foreground=pal["subtle"], font=(UI_FONT, 11))
-        style.configure("Status.TFrame", background=pal["page"])
-        style.configure("Status.TLabel", background=pal["page"],
-                        foreground=pal["subtle"], font=(UI_FONT, 11))
-        style.configure("Treeview", rowheight=30, background=pal["card"],
-                        fieldbackground=pal["card"], foreground=pal["text"],
-                        borderwidth=0, font=(UI_FONT, 12))
-        style.configure("Treeview.Heading", font=(UI_FONT, 11),
-                        background=pal["card"], foreground=pal["subtle"])
-        style.map("Treeview",
-                  background=[("selected", pal["select"])],
-                  foreground=[("selected", "#ffffff")])
-        tree.tag_configure("selrow", background=pal["select"], foreground="#ffffff")
-        log_box.configure(background=pal["card"], foreground=pal["text"],
-                          insertbackground=pal["text"])
-        paned.configure(background=pal["page"])
-        for card in cards:
-            card.retheme(pal)
+        def apply_theme(force=False):
+            key = cfg.get("theme", "auto")
+            if key == "auto":
+                key = "dark" if system_dark() else "light"
+            if not force and theme_now["key"] == key:
+                return
+            theme_now["key"] = key
+            pal = WIN_PALETTES[key]
+            root.configure(background=pal["page"])
+            style.configure("TFrame", background=pal["page"])
+            style.configure("Subtle.TLabel", background=pal["page"],
+                            foreground=pal["subtle"])
+            style.configure("Treeview", background=pal["card"],
+                            fieldbackground=pal["card"], foreground=pal["text"])
+            style.configure("Treeview.Heading", background=pal["card"],
+                            foreground=pal["subtle"])
+            log_box.configure(background=pal["card"], foreground=pal["text"],
+                              insertbackground=pal["text"])
 
-    def on_theme_changed(_event=None):
-        # 系统深浅色切换时，Tk 的系统色自动更新，这里强制重画自绘的卡片
-        apply_theme(force=True)
+        def on_theme_changed(_event=None):
+            apply_theme(force=True)
+    else:
+        def apply_theme(force=False):
+            # macOS：控件全部系统自绘；只有经典 Text 日志需要跟一下系统色
+            log_box.configure(background="systemTextBackgroundColor",
+                              foreground="systemTextColor",
+                              insertbackground="systemTextColor")
 
-    class Card(tk.Canvas):
-        """无边框圆角卡片（macOS 访达风格），内容放进 .body。
-        圆角用两块矩形 + 四个四分之一圆拼出，边角是真正的圆弧。"""
+        def on_theme_changed(_event=None):
+            apply_theme(force=True)
 
-        def __init__(self, master):
-            super().__init__(master, highlightthickness=0, bd=0)
-            self._items = [
-                self.create_rectangle(0, 0, 0, 0, outline=""),
-                self.create_rectangle(0, 0, 0, 0, outline=""),
-                self.create_arc(0, 0, 0, 0, start=0, extent=90, outline=""),
-                self.create_arc(0, 0, 0, 0, start=90, extent=90, outline=""),
-                self.create_arc(0, 0, 0, 0, start=180, extent=90, outline=""),
-                self.create_arc(0, 0, 0, 0, start=270, extent=90, outline=""),
-            ]
-            self.body = tk.Frame(self)
-            self.body.pack_propagate(False)
-            self._win = self.create_window(0, 0, window=self.body, anchor="nw")
-            self.bind("<Configure>", self._on_resize)
-            cards.append(self)
-
-        def retheme(self, pal):
-            self.configure(background=pal["page"])
-            self.body.configure(background=pal["card"])
-            for item in self._items:
-                self.itemconfigure(item, fill=pal["card"])
-
-        def _on_resize(self, _event):
-            w, h = self.winfo_width(), self.winfo_height()
-            r = 12  # macOS 官方内容卡片圆角
-            rect_h, rect_v, ne, nw, sw, se = self._items
-            self.coords(rect_h, r, 0, w - r, h)
-            self.coords(rect_v, 0, r, w, h - r)
-            self.coords(ne, w - 2 * r, 0, w, 2 * r)
-            self.coords(nw, 0, 0, 2 * r, 2 * r)
-            self.coords(sw, 0, h - 2 * r, 2 * r, h)
-            self.coords(se, w - 2 * r, h - 2 * r, w, h)
-            self.coords(self._win, 6, 6)
-            self.itemconfigure(self._win, width=max(20, w - 12), height=max(20, h - 12))
-
-    # 0 顶部：标题 + 当前账号
-    head = ttk.Frame(root, padding=(18, 14, 18, 6))
+    # 0 顶部：当前账号（标题用系统标题栏，不在窗口里重复）
+    head = ttk.Frame(root, padding=(14, 12, 14, 4))
     head.grid(row=0, column=0, sticky="ew")
-    ttk.Label(head, text=APP_NAME, style="Title.TLabel").pack(side="left")
     current_var = tk.StringVar(value="读取中…")
-    ttk.Label(head, textvariable=current_var, style="Subtle.TLabel").pack(
-        side="left", padx=(16, 0), pady=(6, 0))
+    ttk.Label(head, textvariable=current_var, style="Subtle.TLabel").pack(side="left")
 
-    # 1 账号列表 + 日志：圆角卡片，中间分隔条可拖动
+    # 1 账号列表 + 日志：系统控件，中间可拖动分隔条
     paned = tk.PanedWindow(root, orient="vertical", sashwidth=6, sashrelief="flat",
                            bd=0, showhandle=False, opaqueresize=True)
-    paned.grid(row=1, column=0, sticky="nsew", padx=14, pady=(4, 0))
-    list_card = Card(paned)
-    log_card = Card(paned)
-    paned.add(list_card, minsize=140, stretch="always")
+    paned.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 0))
+    list_frame = ttk.Frame(paned)
+    log_frame = ttk.Frame(paned)
+    paned.add(list_frame, minsize=140, stretch="always")
     # 日志有最小高度，拖不小；隐藏只用状态栏按钮
-    paned.add(log_card, minsize=110, stretch="never")
+    paned.add(log_frame, minsize=110, stretch="never")
 
-    list_body = list_card.body
-    list_body.columnconfigure(0, weight=1)
-    list_body.rowconfigure(0, weight=1)
+    list_frame.columnconfigure(0, weight=1)
+    list_frame.rowconfigure(0, weight=1)
     cols = ("name", "uid", "expiry")
-    tree = ttk.Treeview(list_body, columns=cols, show="headings", selectmode="extended")
+    tree = ttk.Treeview(list_frame, columns=cols, show="headings", selectmode="extended")
     tree.heading("name", text="账号（双击切换，可多选）")
     tree.heading("uid", text="UID")
     tree.heading("expiry", text="有效期至")
     tree.column("name", width=240, anchor="w")
     tree.column("uid", width=230, anchor="w")
     tree.column("expiry", width=140, anchor="w")
-    vsb = ttk.Scrollbar(list_body, orient="vertical", command=tree.yview)
+    vsb = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=vsb.set)
     tree.grid(row=0, column=0, sticky="nsew")
     vsb.grid(row=0, column=1, sticky="ns")
 
-    log_box = tk.Text(log_card.body, height=4, wrap="word", state="disabled",
-                      relief="flat", borderwidth=0, highlightthickness=0,
-                      padx=10, pady=8, font=(MONO_FONT, 10))
+    log_box = tk.Text(log_frame, height=4, wrap="word", state="disabled",
+                      padx=10, pady=6, font=(MONO_FONT, 10))
     log_box.pack(fill="both", expand=True)
 
-    # 2 工具栏（其余操作在右键菜单）
-    bar = ttk.Frame(root, padding=(18, 10, 18, 6))
+    # 2 工具栏（全部系统按钮）
+    bar = ttk.Frame(root, padding=(14, 10, 14, 6))
     bar.grid(row=2, column=0, sticky="ew")
     btn_import = ttk.Button(bar, text="导入账号…")
     btn_import.pack(side="left")
@@ -1258,22 +1195,24 @@ def gui():
     btn_capture.pack(side="left", padx=(8, 0))
     btn_export = ttk.Button(bar, text="导出账号…")
     btn_export.pack(side="left", padx=(8, 0))
-    btn_switch = ttk.Button(bar, text="切换账号 ▶", style="Big.TButton")
-    btn_switch.pack(side="right", ipady=3)
+    btn_restore = ttk.Button(bar, text="恢复备份…")
+    btn_restore.pack(side="left", padx=(8, 0))
+    btn_switch = ttk.Button(bar, text="切换账号")
+    btn_switch.pack(side="right")
 
     # 3 状态栏（右侧小按钮）
-    status_bar = ttk.Frame(root, style="Status.TFrame")
+    status_bar = ttk.Frame(root)
     status_bar.grid(row=3, column=0, sticky="ew", pady=(8, 0))
     status_var = tk.StringVar(value="就绪")
-    ttk.Label(status_bar, textvariable=status_var, style="Status.TLabel",
-              anchor="w").pack(side="left", fill="x", expand=True, padx=(10, 0))
+    ttk.Label(status_bar, textvariable=status_var, style="Subtle.TLabel",
+              anchor="w").pack(side="left", fill="x", expand=True, padx=(4, 0))
     btn_settings = ttk.Button(status_bar, text="设置…", width=7)
     btn_settings.pack(side="right", padx=(4, 6), pady=3)
     btn_log = ttk.Button(status_bar, text="隐藏日志", width=9)
     btn_log.pack(side="right", padx=4, pady=3)
 
     busy = {"value": False}
-    buttons = [btn_switch, btn_import, btn_capture, btn_export]
+    buttons = [btn_switch, btn_import, btn_capture, btn_export, btn_restore]
     log_ui = {"hidden": False, "sash": 0}
     timer = {"id": None}
 
@@ -1303,14 +1242,14 @@ def gui():
         if log_ui["hidden"]:
             return
         log_ui["sash"] = sash_get()
-        paned.forget(log_card)
+        paned.forget(log_frame)
         log_ui["hidden"] = True
         btn_log.configure(text="显示日志")
 
     def expand_log():
         if not log_ui["hidden"]:
             return
-        paned.add(log_card, minsize=110, stretch="never")
+        paned.add(log_frame, minsize=110, stretch="never")
         pos = log_ui["sash"] or max(220, paned.winfo_height() - 170)
         root.after_idle(lambda: sash_set(pos))
         log_ui["hidden"] = False
@@ -1318,15 +1257,6 @@ def gui():
 
     def toggle_log():
         collapse_log() if not log_ui["hidden"] else expand_log()
-
-    # 多选选中色兜底：原生主题不吃 style.map 时用 tag 上色
-    def on_select(_event):
-        sel = set(tree.selection())
-        for iid in tree.get_children():
-            tags = [t for t in (tree.item(iid, "tags") or ()) if t != "selrow"]
-            if iid in sel:
-                tags.append("selrow")
-            tree.item(iid, tags=tags)
 
     # 拖动框选（macOS 原生 Treeview 不带橡皮筋选择，自己实现；
     # 按住 Shift / Ctrl / Command 时不介入，交给系统行为）
@@ -1723,9 +1653,6 @@ def gui():
         win.transient(root)
         body = ttk.Frame(win, padding=16)
         body.pack(fill="both", expand=True)
-        theme_now_label = dict((v, k) for k, v in THEME_LABELS).get(
-            cfg.get("theme", "auto"), "跟随系统")
-        theme_var = tk.StringVar(value=theme_now_label)
         auto_var = tk.BooleanVar(value=bool(cfg.get("auto_refresh", True)))
         minutes = int(cfg.get("auto_refresh_minutes", 60) or 60)
         interval_var = tk.StringVar(
@@ -1733,28 +1660,39 @@ def gui():
         restart_var = tk.BooleanVar(value=bool(cfg.get("restart_after_switch", True)))
         ide_var = tk.BooleanVar(value=bool(cfg.get("switch_ide", True)))
 
-        row0 = ttk.Frame(body)
-        row0.grid(row=0, column=0, sticky="w")
-        ttk.Label(row0, text="外观：").pack(side="left")
-        ttk.Combobox(row0, textvariable=theme_var, state="readonly", width=10,
-                     values=[lbl for lbl, _ in THEME_LABELS]).pack(side="left")
+        row = 0
+        if IS_WIN:  # macOS 完全跟随系统外观，不提供覆盖
+            theme_var = tk.StringVar(value=dict((v, k) for k, v in THEME_LABELS).get(
+                cfg.get("theme", "auto"), "跟随系统"))
+            row0 = ttk.Frame(body)
+            row0.grid(row=row, column=0, sticky="w")
+            ttk.Label(row0, text="外观：").pack(side="left")
+            ttk.Combobox(row0, textvariable=theme_var, state="readonly", width=10,
+                         values=[lbl for lbl, _ in THEME_LABELS]).pack(side="left")
+            row += 1
+
         ttk.Checkbutton(body, text="定时刷新当前账号有效期"
                         "（客户端自动续期后，工具把新 token 归档）",
-                        variable=auto_var).grid(row=1, column=0, sticky="w",
+                        variable=auto_var).grid(row=row, column=0, sticky="w",
                                                 pady=(12, 0))
+        row += 1
         row1 = ttk.Frame(body)
-        row1.grid(row=2, column=0, sticky="w", pady=(4, 0), padx=(24, 0))
+        row1.grid(row=row, column=0, sticky="w", pady=(4, 0), padx=(24, 0))
         ttk.Label(row1, text="刷新间隔：").pack(side="left")
         ttk.Combobox(row1, textvariable=interval_var, state="readonly", width=10,
                      values=[lbl for lbl, _ in INTERVALS]).pack(side="left")
+        row += 1
         ttk.Checkbutton(body, text="切换后自动重启客户端",
-                        variable=restart_var).grid(row=3, column=0,
+                        variable=restart_var).grid(row=row, column=0,
                                                    sticky="w", pady=(10, 0))
+        row += 1
         ttk.Checkbutton(body, text="同步切换 CodeBuddy IDE 登录",
-                        variable=ide_var).grid(row=4, column=0, sticky="w", pady=(6, 0))
+                        variable=ide_var).grid(row=row, column=0, sticky="w", pady=(6, 0))
+        row += 1
 
         def save():
-            cfg["theme"] = dict(THEME_LABELS)[theme_var.get()]
+            if IS_WIN:
+                cfg["theme"] = dict(THEME_LABELS)[theme_var.get()]
             cfg["auto_refresh"] = auto_var.get()
             cfg["auto_refresh_minutes"] = dict(INTERVALS)[interval_var.get()]
             cfg["restart_after_switch"] = restart_var.get()
@@ -1766,15 +1704,21 @@ def gui():
             status_var.set("设置已保存")
 
         btns = ttk.Frame(body)
-        btns.grid(row=5, column=0, sticky="e", pady=(12, 0))
+        btns.grid(row=row, column=0, sticky="e", pady=(12, 0))
         ttk.Button(btns, text="确定", command=save).pack(side="left")
         ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=(8, 0))
+
+    def on_select_all(_event=None):
+        kids = tree.get_children()
+        if kids:
+            tree.selection_set(kids)
 
     menu = tk.Menu(tree, tearoff=0)
     menu.add_command(label="切换到该账号", command=on_switch)
     menu.add_command(label="刷新有效期", command=on_refresh)
+    menu.add_command(label="全选", accelerator="Cmd/Ctrl+A", command=on_select_all)
     menu.add_command(label="导出选中账号…", command=on_export)
-    menu.add_command(label="删除选中档案", command=on_delete)
+    menu.add_command(label="删除选中档案", accelerator="Delete", command=on_delete)
     menu.add_separator()
     menu.add_command(label="恢复备份…", command=on_restore)
     menu.add_command(label="打开数据目录", command=lambda: reveal_path(STORE))
@@ -1786,19 +1730,50 @@ def gui():
                 tree.selection_set(iid)
             menu.tk_popup(event.x_root, event.y_root)
 
+    # 系统菜单栏（macOS 显示在屏幕顶部，Windows 显示在窗口内）
+    accel = "Command" if not IS_WIN else "Control"
+    menubar = tk.Menu(root)
+    m_file = tk.Menu(menubar, tearoff=0)
+    m_file.add_command(label="导入账号…", accelerator="%s-O" % accel,
+                       command=on_import)
+    m_file.add_command(label="导出账号…", command=on_export)
+    m_file.add_command(label="恢复备份…", command=on_restore)
+    m_file.add_separator()
+    m_file.add_command(label="打开数据目录", command=lambda: reveal_path(STORE))
+    menubar.add_cascade(label="文件", menu=m_file)
+    m_edit = tk.Menu(menubar, tearoff=0)
+    m_edit.add_command(label="全选", accelerator="%s-A" % accel, command=on_select_all)
+    m_edit.add_command(label="删除选中档案", command=on_delete)
+    menubar.add_cascade(label="编辑", menu=m_edit)
+    m_act = tk.Menu(menubar, tearoff=0)
+    m_act.add_command(label="切换账号", accelerator="Return", command=on_switch)
+    m_act.add_command(label="保存选中账号", accelerator="%s-S" % accel,
+                      command=on_capture)
+    m_act.add_command(label="刷新有效期", command=on_refresh)
+    menubar.add_cascade(label="账号", menu=m_act)
+    m_view = tk.Menu(menubar, tearoff=0)
+    m_view.add_command(label="隐藏/显示日志", accelerator="%s-L" % accel,
+                       command=toggle_log)
+    m_view.add_command(label="设置…", command=on_settings)
+    menubar.add_cascade(label="显示", menu=m_view)
+    root.configure(menu=menubar)
+
     btn_switch.configure(command=on_switch)
     btn_import.configure(command=on_import)
     btn_capture.configure(command=on_capture)
     btn_export.configure(command=on_export)
+    btn_restore.configure(command=on_restore)
     btn_settings.configure(command=on_settings)
     btn_log.configure(command=toggle_log)
     root.bind("<<ThemeChanged>>", on_theme_changed)
     tree.bind("<Double-1>", on_switch)
     tree.bind("<Return>", on_switch)
     tree.bind("<Button-3>", on_menu)
-    tree.bind("<<TreeviewSelect>>", on_select)
     tree.bind("<Button-1>", on_tree_press, add="+")
     tree.bind("<B1-Motion>", on_tree_motion, add="+")
+    tree.bind("<%s-a>" % accel, on_select_all)
+    tree.bind("<Delete>", on_delete)
+    tree.bind("<BackSpace>", on_delete)
 
     apply_theme(force=True)
     refresh()
