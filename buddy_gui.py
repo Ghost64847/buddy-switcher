@@ -78,7 +78,7 @@ def run():
 
     central = QtWidgets.QWidget()
     layout = QtWidgets.QVBoxLayout(central)
-    layout.setContentsMargins(16, 12, 16, 8)
+    layout.setContentsMargins(16, 8, 16, 8)
     layout.setSpacing(10)
 
     current_label = QtWidgets.QLabel("读取中…")
@@ -96,12 +96,16 @@ def run():
     table.horizontalHeader().setStretchLastSection(True)
     table.setColumnWidth(0, 270)
     table.setColumnWidth(1, 250)
-    table.verticalHeader().setDefaultSectionSize(32)
+    table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
+    # macOS 官方圆角：列表与日志都收成圆角卡片外观（颜色仍走系统配色）
+    table.setStyleSheet("QTableWidget {border: none; border-radius: 10px;}"
+                        "QTableCornerButton::section {border: none;}")
 
     log = QtWidgets.QPlainTextEdit()
     log.setReadOnly(True)
     log.setMaximumBlockCount(2000)
     log.setMinimumHeight(96)
+    log.setStyleSheet("QPlainTextEdit {border: none; border-radius: 10px;}")
 
     splitter = QtWidgets.QSplitter(QT.Vertical)
     splitter.addWidget(table)
@@ -110,6 +114,7 @@ def run():
     splitter.setStretchFactor(1, 1)
     splitter.setCollapsible(0, False)
     splitter.setCollapsible(1, False)
+    splitter.setHandleWidth(4)
     layout.addWidget(splitter, 1)
 
     win.setCentralWidget(central)
@@ -528,7 +533,7 @@ def run():
 
         reload_list()
         row = QtWidgets.QHBoxLayout()
-        btn_pick = QtWidgets.QPushButton("恢复选中的备份（替换当前登录）")
+        btn_pick = QtWidgets.QPushButton("恢复选中备份到账号列表")
         btn_del = QtWidgets.QPushButton("删除选中备份")
         btn_close = QtWidgets.QPushButton("关闭")
         row.addWidget(btn_pick)
@@ -541,14 +546,49 @@ def run():
             sel = lb.selectedItems()
             if not sel:
                 return
-            idx = lb.row(sel[0])
-            try:
-                doc = bs.read_json(backups[idx]["path"])
-            except (OSError, ValueError) as e:
-                QtWidgets.QMessageBox.critical(dlg, bs.APP_NAME, "备份无法读取：%s" % e)
+            docs = []
+            for item in sel:
+                idx = lb.row(item)
+                try:
+                    docs.append(bs.read_json(backups[idx]["path"]))
+                except (OSError, ValueError) as e:
+                    append_log("备份无法读取（第 %d 条）：%s" % (idx + 1, e))
+            if not docs:
                 return
+            # 恢复 = 用备份替换切号区里对应的账号档案（不动当前登录）
+            cur = bs.read_info()
+            cur_uid = bs.account_uid(cur) if cur else ""
+            replaced = []
+            hit_current = None
+            for doc in docs:
+                uid = bs.account_uid(doc)
+                try:
+                    bs.write_info(doc, os.path.join(
+                        bs.PROFILE_DIR, "%s.json" % bs.safe_uid(uid)))
+                except OSError as e:
+                    append_log("恢复失败 %s：%s" % (uid[:8], e))
+                    continue
+                replaced.append(uid)
+                if uid and uid == cur_uid:
+                    hit_current = doc
             dlg.close()
-            do_switch(doc)
+            refresh(replaced)
+            append_log("已用备份替换 %d 个账号档案" % len(replaced))
+            if hit_current is not None:
+                btn = QtWidgets.QMessageBox.question(
+                    win, bs.APP_NAME,
+                    "替换的备份包含当前登录的账号（%s）。\n"
+                    "档案已替换；要让客户端里的登录也变成备份这份，"
+                    "需要重新写入登录（等同重新登录，会退出并重启客户端）。\n\n现在执行吗？"
+                    % bs.account_label(hit_current),
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.No)
+                if btn == QtWidgets.QMessageBox.Yes:
+                    do_switch(hit_current)
+                else:
+                    set_status("已恢复 %d 个档案（当前登录未变动）" % len(replaced))
+            else:
+                set_status("已恢复 %d 个档案" % len(replaced))
 
         def del_backups():
             sel = lb.selectedItems()
