@@ -35,7 +35,7 @@ IS_LINUX = (not IS_WIN) and (sys.platform.startswith("linux")
 IS_MAC = (not IS_WIN) and (not IS_LINUX)
 HOME = os.path.expanduser("~")
 APP_NAME = "Buddy 切号器"
-APP_VERSION = "2.2.11"
+APP_VERSION = "2.2.12"
 UI_FONT = "Microsoft YaHei UI" if IS_WIN else "PingFang SC"
 MONO_FONT = "Consolas" if IS_WIN else "Menlo"
 

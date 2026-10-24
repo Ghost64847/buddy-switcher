@@ -833,8 +833,9 @@ def run():
     m_view = menubar.addMenu("显示")
     m_view.addAction("隐藏/显示日志", toggle_log, QtGui.QKeySequence("Ctrl+L"))
     m_view.addAction("清除日志", on_clear_log, QtGui.QKeySequence("Ctrl+K"))
-    # 设置/关于用菜单角色放进 macOS 应用菜单（顶部第一条），其余平台停在菜单栏上
-    act_settings = QtGui.QAction("设置…", win)
+    # 设置/关于用菜单角色放进 macOS 应用菜单（顶部第一条），其余平台停在菜单栏上；
+    # 省略号是苹果规范（表示打开对话框），Windows/Linux 不要
+    act_settings = QtGui.QAction("设置…" if bs.IS_MAC else "设置", win)
     act_settings.setMenuRole(QtGui.QAction.MenuRole.PreferencesRole)
     act_settings.setShortcut(QtGui.QKeySequence.StandardKey.Preferences)
     act_settings.triggered.connect(on_settings)
