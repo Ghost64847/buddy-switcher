@@ -68,10 +68,13 @@ def run():
     app.setApplicationVersion(bs.APP_VERSION)
     app.setOrganizationName("BuddySwitch")
 
-    # 全局字体：macOS 用苹果官方苹方（PingFang SC），Windows 用微软雅黑
-    _ui_font = app.font()
-    _ui_font.setFamily(bs.UI_FONT)
-    app.setFont(_ui_font)
+    if bs.IS_MAC:
+        # 苹果官方观感 = mac 系统字体：中文自动就是苹方（PingFang SC），
+        # 英文/数字用 SF。钉死 PingFang 会让拉丁字形变样、不像官方 app。
+        # Windows/Linux 用各自系统默认字体。
+        _ui_font = app.font()
+        _ui_font.setFamily(".AppleSystemUIFont")
+        app.setFont(_ui_font)
 
     def apply_theme():
         """深浅外观：跟随系统（默认）/ 浅色 / 深色。
@@ -153,6 +156,30 @@ def run():
     current_label = QtWidgets.QLabel("读取中…")
     layout.addWidget(current_label)
 
+    class DotHandle(QtWidgets.QSplitterHandle):
+        """VS Code 式三点手柄：中间三个圆点，提示可上下拖动调整分区"""
+
+        def __init__(self, orientation, parent):
+            # orientation 必须等于分隔器自身方向（垂直分隔器传 Vertical），
+            # 传反会变成“鼠标左右滑才上下缩放”
+            super().__init__(orientation, parent)
+            self.setCursor(QT.SizeVerCursor)
+
+        def paintEvent(self, event):
+            painter = QtGui.QPainter(self)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            color = self.palette().placeholderText().color()
+            painter.setPen(QT.NoPen)
+            painter.setBrush(color)
+            cx, cy = self.width() / 2, self.height() / 2
+            for dx in (-7, 0, 7):
+                painter.drawEllipse(QtCore.QPointF(cx + dx, cy), 1.7, 1.7)
+            painter.end()
+
+    class VSplitter(QtWidgets.QSplitter):
+        def createHandle(self, _=None):
+            return DotHandle(self.orientation(), self)
+
     table = QtWidgets.QTableWidget(0, 3)
     table.setHorizontalHeaderLabels(["账号", "UID", "有效期至"])
     table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -174,25 +201,31 @@ def run():
     table.setHorizontalScrollBarPolicy(QT.ScrollBarAlwaysOff)  # 列宽总和不出窗口
     _clamping = {"on": False}
 
-    def clamp_columns(_sec=None, _old=None, _new=None):
-        """访达式列宽：拖到其他列都被压到最小宽后就顶住，
-        列宽总和永远不会超过窗口（不出现横向滚动）。"""
+    def clamp_columns(sec=None, _old=None, _new=None):
+        """访达式列宽：列宽总和永远等于视口宽（不出现横向滚动）。
+        拖宽某一列时先把右侧各列压到最小，之后顶住拖不动；
+        窗口变窄时压缩最宽的列。"""
         if _clamping["on"]:
             return
         _clamping["on"] = True
         view_w = table.viewport().width()
         ncols = table.columnCount()
-        overflow = sum(table.columnWidth(c) for c in range(ncols)) - view_w
+        last = ncols - 1
+        widths = [table.columnWidth(c) for c in range(ncols)]
+        overflow = sum(widths) - view_w
         if overflow > 0:
-            # 压缩除最后一列外最宽的列（最后一列由 stretch 兜底占满剩余）
-            for c in sorted(range(ncols - 1),
-                            key=lambda i: table.columnWidth(i), reverse=True):
-                cut = min(table.columnWidth(c) - 40, overflow)
-                if cut > 0:
-                    table.setColumnWidth(c, table.columnWidth(c) - cut)
-                    overflow -= cut
-                if overflow <= 0:
-                    break
+            if sec is not None and sec != last and widths[sec] - 40 >= overflow:
+                # 用户正在拖这一列：把它顶回极限位置，不动其他列
+                table.setColumnWidth(sec, widths[sec] - overflow)
+            else:
+                for c in sorted(range(last), key=lambda i: widths[i],
+                                reverse=True):
+                    cut = min(widths[c] - 40, overflow)
+                    if cut > 0:
+                        table.setColumnWidth(c, widths[c] - cut)
+                        overflow -= cut
+                    if overflow <= 0:
+                        break
         _clamping["on"] = False
 
     header.sectionResized.connect(clamp_columns)
@@ -219,7 +252,7 @@ def run():
         lay.addWidget(inner)
         return card
 
-    splitter = QtWidgets.QSplitter(QT.Vertical)  # 原生手柄，上下拖调分区
+    splitter = VSplitter(QT.Vertical)  # 三点手柄，上下拖调分区
     splitter.addWidget(make_card(table, rounded=False))
     log_card = make_card(log, rounded=True, window_bg=True)
     log_card.layout().setContentsMargins(6, 6, 6, 6)
