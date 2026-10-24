@@ -67,6 +67,7 @@ def prune(root):
 if __name__ == "__main__":
     root = sys.argv[1]
     if not os.path.isdir(root):
-        sys.exit("目录不存在：%s" % root)
+        sys.exit("prune_qt: dir not found: %s" % root)
+    # 只输出 ASCII（Windows runner 控制台默认 cp1252，中文会崩）
     mb = prune(root) / 1048576
-    print("prune_qt: 从 %s 剪掉 %.1fMB" % (root, mb))
+    print("prune_qt: freed %.1fMB from %s" % (mb, root))

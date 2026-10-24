@@ -73,7 +73,14 @@ rm -rf dist/dmgroot "$DMG"
 mkdir -p dist/dmgroot
 cp -R "dist/$APP_NAME.app" dist/dmgroot/
 ln -sfn /Applications dist/dmgroot/Applications
-hdiutil create -volname "$APP_NAME" -srcfolder dist/dmgroot -ov -format UDZO "$DMG" >/dev/null
+# hdiutil 偶发 Resource busy（残留挂载卷），最多重试 3 次
+n=0
+until hdiutil create -volname "$APP_NAME" -srcfolder dist/dmgroot -ov -format UDZO "$DMG" >/dev/null 2>&1; do
+    n=$((n + 1))
+    [ "$n" -ge 3 ] && { echo "hdiutil 三次失败"; exit 1; }
+    hdiutil detach "/Volumes/$APP_NAME" >/dev/null 2>&1
+    sleep 5
+done
 rm -rf dist/dmgroot
 
 echo "完成：$DMG"
