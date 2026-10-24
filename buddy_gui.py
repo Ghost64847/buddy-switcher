@@ -68,12 +68,10 @@ def run():
     app.setApplicationVersion(bs.APP_VERSION)
     app.setOrganizationName("BuddySwitch")
 
-    if bs.IS_MAC:
-        # 全局用 mac 系统字体（SF Pro + 中文自动回退 PingFang），
-        # 界面观感与原生 app 一致；Windows/Linux 用各自系统默认
-        _ui_font = app.font()
-        _ui_font.setFamily(".AppleSystemUIFont")
-        app.setFont(_ui_font)
+    # 全局字体：macOS 用苹果官方苹方（PingFang SC），Windows 用微软雅黑
+    _ui_font = app.font()
+    _ui_font.setFamily(bs.UI_FONT)
+    app.setFont(_ui_font)
 
     def apply_theme():
         """深浅外观：跟随系统（默认）/ 浅色 / 深色。
@@ -168,19 +166,42 @@ def run():
     # 像访达一样：三列都可以拖列边界左右调宽，最后一列占满剩余宽
     header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
     header.setStretchLastSection(True)
+    header.setMinimumSectionSize(40)  # 每列至少还能放下标题
     table.setColumnWidth(0, 250)
     table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
     table.setStyleSheet("QTableWidget {background: transparent; border: none;}")
     # 表头不加任何样式表覆盖：保留 Aqua 原生样式（含访达式的列分隔竖线）
+    table.setHorizontalScrollBarPolicy(QT.ScrollBarAlwaysOff)  # 列宽总和不出窗口
+    _clamping = {"on": False}
+
+    def clamp_columns(_sec=None, _old=None, _new=None):
+        """访达式列宽：拖到其他列都被压到最小宽后就顶住，
+        列宽总和永远不会超过窗口（不出现横向滚动）。"""
+        if _clamping["on"]:
+            return
+        _clamping["on"] = True
+        view_w = table.viewport().width()
+        ncols = table.columnCount()
+        overflow = sum(table.columnWidth(c) for c in range(ncols)) - view_w
+        if overflow > 0:
+            # 压缩除最后一列外最宽的列（最后一列由 stretch 兜底占满剩余）
+            for c in sorted(range(ncols - 1),
+                            key=lambda i: table.columnWidth(i), reverse=True):
+                cut = min(table.columnWidth(c) - 40, overflow)
+                if cut > 0:
+                    table.setColumnWidth(c, table.columnWidth(c) - cut)
+                    overflow -= cut
+                if overflow <= 0:
+                    break
+        _clamping["on"] = False
+
+    header.sectionResized.connect(clamp_columns)
 
     log = QtWidgets.QPlainTextEdit()
     log.setReadOnly(True)
     log.setMaximumBlockCount(2000)
     log.setMinimumHeight(96)
     log.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)  # 长行折行，只上下滚动
-    _log_font = log.font()
-    _log_font.setFamily(bs.MONO_FONT)  # 固定等宽字体，避免深浅切换后粗细漂移
-    log.setFont(_log_font)
     log.setStyleSheet("QPlainTextEdit {background: transparent; border: none;}")
 
     def make_card(inner, rounded=True, window_bg=False):
