@@ -198,6 +198,13 @@ def run():
     table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
     table.setStyleSheet("QTableWidget {background: transparent; border: none;}")
     # 表头不加任何样式表覆盖：保留 Aqua 原生样式（含访达式的列分隔竖线）
+    class NoFocusDelegate(QtWidgets.QStyledItemDelegate):
+        """只去掉选中项上的虚线焦点框，其余渲染原样交给样式/样式表"""
+
+        def paint(self, painter, option, index):
+            option.state &= ~QtWidgets.QStyle.State_HasFocus
+            super().paint(painter, option, index)
+
     if not bs.IS_MAC:
         # Windows 现代样式按单元格画选中（圆角留缝，整行选中会在列分隔
         # 处断开）；改用样式表平铺系统高亮色：相邻单元格同色无缝=整行蓝
@@ -205,6 +212,7 @@ def run():
             "QTableWidget {background: transparent; border: none;}"
             "QTableWidget::item:selected {"
             "background: palette(highlight); color: palette(highlighted-text);}")
+        table.setItemDelegate(NoFocusDelegate(table))  # 去掉虚线焦点框
 
     log = QtWidgets.QPlainTextEdit()
     log.setReadOnly(True)
@@ -683,6 +691,7 @@ def run():
             lb.setStyleSheet(
                 "QListWidget::item:selected {"
                 "background: palette(highlight); color: palette(highlighted-text);}")
+            lb.setItemDelegate(NoFocusDelegate(lb))
         lay.addWidget(lb)
 
         def reload_list():
