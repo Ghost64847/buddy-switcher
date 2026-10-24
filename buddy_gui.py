@@ -199,6 +199,36 @@ def run():
     table.setStyleSheet("QTableWidget {background: transparent; border: none;}")
     # 表头不加任何样式表覆盖：保留 Aqua 原生样式（含访达式的列分隔竖线）
 
+    if not bs.IS_MAC:
+        # Windows 现代样式把选中底按单元格逐个画，选中一行时蓝色会在
+        # 列分隔处断开；改为横跨整行的系统色直角方块（观感同资源管理器
+        # 的整行选中），文字仍交给系统样式绘制。mac 原生就是整行绘制。
+        class FullRowSelDelegate(QtWidgets.QStyledItemDelegate):
+            def paint(self, painter, option, index):
+                opt = QtWidgets.QStyleOptionViewItem(option)
+                self.initStyleOption(opt, index)
+                if opt.state & QtWidgets.QStyle.State_Selected:
+                    view = opt.widget
+                    hdr = view.horizontalHeader()
+                    first = min(range(hdr.count()), key=hdr.visualIndex)
+                    if index.column() == first:
+                        last = max(range(hdr.count()), key=hdr.visualIndex)
+                        left = view.columnViewportPosition(first)
+                        right = (view.columnViewportPosition(last)
+                                 + view.columnWidth(last))
+                        painter.fillRect(QtCore.QRect(left, opt.rect.top(),
+                                                      right - left,
+                                                      opt.rect.height()),
+                                         opt.palette.highlight())
+                    opt.state &= ~QtWidgets.QStyle.State_Selected
+                    opt.palette.setColor(QtGui.QPalette.ColorRole.Text,
+                                         opt.palette.highlightedText().color())
+                opt.state &= ~QtWidgets.QStyle.State_HasFocus
+                QtWidgets.QApplication.style().drawControl(
+                    QtWidgets.QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+
+        table.setItemDelegate(FullRowSelDelegate(table))
+
     log = QtWidgets.QPlainTextEdit()
     log.setReadOnly(True)
     log.setMaximumBlockCount(2000)
