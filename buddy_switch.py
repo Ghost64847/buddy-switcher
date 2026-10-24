@@ -1046,6 +1046,7 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None,
     if restart is None:
         restart = cfg.get("restart_after_switch", True)
     scope = cfg.get("switch_scope", "both")
+    ide_installed = ide_available()  # 未安装时全程不提 IDE，避免误导
     if do_wb is None:
         do_wb = (scope != "ide") if switch_ide is None else True
     if do_ide is None:
@@ -1053,7 +1054,7 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None,
             do_ide = switch_ide
         else:
             do_ide = scope != "workbuddy"
-        do_ide = do_ide and ide_available()
+        do_ide = do_ide and ide_installed
 
     uid = account_uid(doc)
     label = account_label(doc)
@@ -1101,7 +1102,8 @@ def switch_to(doc, restart=None, switch_ide=None, dry_run=False, progress=None,
             log("IDE 同步失败：%s" % e)
             lines.append("CodeBuddy IDE：未同步（%s）" % str(e).splitlines()[0][:80])
     else:
-        lines.append("CodeBuddy IDE：跳过（未安装或已设置为只切 WorkBuddy）")
+        if ide_installed:  # 装了才说明；没装 IDE 就不提，免得误导
+            lines.append("CodeBuddy IDE：跳过（已设置为只切 WorkBuddy）")
 
     if restart and was_running:
         say("重启客户端…")
