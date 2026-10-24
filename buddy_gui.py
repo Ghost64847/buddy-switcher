@@ -84,6 +84,25 @@ def run():
     current_label = QtWidgets.QLabel("读取中…")
     layout.addWidget(current_label)
 
+    class DotHandle(QtWidgets.QSplitterHandle):
+        """VS Code 式分隔手柄：一条细线中间三个圆点"""
+
+        def paintEvent(self, event):
+            from PySide6 import QtCore, QtGui
+            painter = QtGui.QPainter(self)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            color = self.palette().placeholderText().color()
+            painter.setPen(QT.NoPen)
+            painter.setBrush(color)
+            cx, cy = self.width() / 2, self.height() / 2
+            for dx in (-7, 0, 7):
+                painter.drawEllipse(QtCore.QPointF(cx + dx, cy), 1.7, 1.7)
+            painter.end()
+
+    class VSplitter(QtWidgets.QSplitter):
+        def createHandle(self, _=None):
+            return DotHandle(QT.Horizontal, self)
+
     table = QtWidgets.QTableWidget(0, 3)
     table.setHorizontalHeaderLabels(["账号（双击切换，可多选）", "UID", "有效期至"])
     table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -93,40 +112,58 @@ def run():
     table.setShowGrid(False)  # 苹果列表风格：不画网格线
     table.setContextMenuPolicy(QT.CustomContextMenu)
     table.verticalHeader().setVisible(False)
-    table.horizontalHeader().setStretchLastSection(True)
-    table.setColumnWidth(0, 270)
-    table.setColumnWidth(1, 250)
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
+    header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)  # UID 占满剩余宽
+    header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+    table.setColumnWidth(0, 250)
     table.verticalHeader().setDefaultSectionSize(26)  # 单行紧凑高度
-    # macOS 官方圆角：列表与日志都收成圆角卡片外观（颜色仍走系统配色）
-    table.setStyleSheet("QTableWidget {border: none; border-radius: 10px;}"
+    table.setStyleSheet("QTableWidget {background: transparent; border: none;}"
+                        "QHeaderView::section {background: transparent; border: none;}"
                         "QTableCornerButton::section {border: none;}")
 
     log = QtWidgets.QPlainTextEdit()
     log.setReadOnly(True)
     log.setMaximumBlockCount(2000)
     log.setMinimumHeight(96)
-    log.setStyleSheet("QPlainTextEdit {border: none; border-radius: 10px;}")
+    log.setStyleSheet("QPlainTextEdit {background: palette(base); border: none;"
+                      "border-radius: 10px;}")
 
-    splitter = QtWidgets.QSplitter(QT.Vertical)
-    splitter.addWidget(table)
-    splitter.addWidget(log)
+    def make_card(inner):
+        """macOS 官方圆角卡片：系统底色 + 细描边 + 圆角，深浅色跟随系统"""
+        card = QtWidgets.QFrame()
+        card.setObjectName("roundedCard")
+        card.setStyleSheet(
+            "QFrame#roundedCard {background: palette(base);"
+            "border: 1px solid palette(mid); border-radius: 10px;}")
+        lay = QtWidgets.QVBoxLayout(card)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(inner)
+        return card
+
+    splitter = VSplitter(QT.Vertical)
+    splitter.addWidget(make_card(table))
+    log_card = make_card(log)
+    log_card.layout().setContentsMargins(6, 6, 6, 6)
+    splitter.addWidget(log_card)
     splitter.setStretchFactor(0, 3)
     splitter.setStretchFactor(1, 1)
     splitter.setCollapsible(0, False)
     splitter.setCollapsible(1, False)
-    splitter.setHandleWidth(4)
+    splitter.setHandleWidth(14)
     layout.addWidget(splitter, 1)
 
     win.setCentralWidget(central)
 
-    # 底部一行按钮（全部操作集中一行，原生系统按钮）
+    # 底部一行按钮（全部操作集中一行，原生系统按钮；不用状态栏）
     bar = QtWidgets.QHBoxLayout()
-    btn_import = QtWidgets.QPushButton("导入账号…")
+    btn_import = QtWidgets.QPushButton("导入账号")
     btn_capture = QtWidgets.QPushButton("保存选中账号")
-    btn_export = QtWidgets.QPushButton("导出选中账号…")
-    btn_restore = QtWidgets.QPushButton("恢复备份…")
+    btn_export = QtWidgets.QPushButton("导出选中账号")
+    btn_restore = QtWidgets.QPushButton("恢复备份")
     btn_switch = QtWidgets.QPushButton("切换账号")
-    btn_settings = QtWidgets.QPushButton("设置…")
+    btn_settings = QtWidgets.QPushButton("设置")
     btn_log = QtWidgets.QPushButton("隐藏日志")
     for b in (btn_import, btn_capture, btn_export, btn_restore):
         bar.addWidget(b)
@@ -134,10 +171,6 @@ def run():
     for b in (btn_settings, btn_log, btn_switch):
         bar.addWidget(b)
     layout.addLayout(bar)
-
-    status_label = QtWidgets.QLabel("就绪")
-    status = win.statusBar()
-    status.addWidget(status_label)
 
     busy = {"value": False}
     log_hidden = {"value": False}
@@ -148,7 +181,8 @@ def run():
         log.appendPlainText(msg.rstrip())
 
     def set_status(msg):
-        status_label.setText(msg)
+        # 状态文字直接进日志区（主窗口不再放常驻状态栏）
+        append_log(msg)
 
     def set_busy(flag):
         busy["value"] = flag
@@ -221,7 +255,7 @@ def run():
             set_busy(False)
             job.deleteLater()
 
-        job.said.connect(lambda m: (append_log(m), set_status(m)))
+        job.said.connect(set_status)  # 进度文字进日志区（无状态栏）
         job.finished.connect(done)
         set_busy(True)
         job.start()
