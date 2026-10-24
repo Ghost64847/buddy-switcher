@@ -30,6 +30,9 @@ from datetime import datetime
 from pathlib import Path
 
 IS_WIN = (os.name == "nt")
+IS_LINUX = (not IS_WIN) and (sys.platform.startswith("linux")
+                             or sys.platform.startswith("freebsd"))
+IS_MAC = (not IS_WIN) and (not IS_LINUX)
 HOME = os.path.expanduser("~")
 APP_NAME = "Buddy 切号器"
 UI_FONT = "Microsoft YaHei UI" if IS_WIN else "PingFang SC"
@@ -39,6 +42,8 @@ MONO_FONT = "Consolas" if IS_WIN else "Menlo"
 def _base_dir():
     if IS_WIN:
         return os.environ.get("APPDATA") or os.path.join(HOME, "AppData", "Roaming")
+    if IS_LINUX:
+        return os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
     return os.path.join(HOME, "Library", "Application Support")
 
 
@@ -55,6 +60,7 @@ CONFIG = os.path.join(STORE, "config.json")
 # CodeBuddy IDE 的登录：加密存在 state.vscdb 里
 #   macOS   口令在系统钥匙串 "CodeBuddy CN Safe Storage"（AES-128-CBC）
 #   Windows 用系统 DPAPI（CryptProtectData）
+#   Linux   无系统级保管箱，IDE 同步不可用（可切 WorkBuddy 端）
 IDE_DB = os.path.join(BASE_DIR, "CodeBuddy CN", "User", "globalStorage", "state.vscdb")
 IDE_SECRET_LIKE = "%planning-genie.new.accessToken%"
 IDE_BLOB_KEY = "Tencent-Cloud.coding-copilot"
@@ -71,6 +77,9 @@ if IS_WIN:
                     r"%LOCALAPPDATA%\Programs\CodeBuddy\CodeBuddy.exe",
                     r"%PROGRAMFILES%\CodeBuddy CN\CodeBuddy CN.exe"]},
     ]
+elif IS_LINUX:
+    # 官方客户端没有 Linux 版；如装了兼容版可在 config.json 的 apps 里配置
+    DEFAULT_APPS = []
 else:
     DEFAULT_APPS = [
         {"name": "CodeBuddy CN", "path": "/Applications/CodeBuddy CN.app"},
@@ -606,6 +615,8 @@ def _dpapi(data, protect):
 
 def ide_secret_key():
     """macOS：从系统钥匙串读 Chromium safeStorage 口令（首次会弹授权框）"""
+    if IS_LINUX:
+        raise RuntimeError("Linux 上没有系统保管箱，无法解密 IDE 登录记录")
     try:
         r = subprocess.run(["security", "find-generic-password",
                             "-s", "CodeBuddy CN Safe Storage", "-w"],
@@ -868,6 +879,50 @@ if IS_WIN:
                     log("启动 %s 失败：%s" % (app["name"], e))
                 return
         log("未找到 %s 的安装路径，请手动启动（可在 config.json 的 apps 里配置）。" % app["name"])
+elif IS_LINUX:
+    # Linux：官方客户端没有发布版；用户在 config.json apps 里配置
+    # {"name": "...", "cmd": "/opt/xxx/xxx", "launch": ["/opt/xxx/xxx"]}
+    def app_running(app):
+        pat = app.get("cmd") or app.get("path") or ""
+        if not pat:
+            return False
+        try:
+            r = subprocess.run(["pgrep", "-f", pat], capture_output=True, text=True)
+            return r.returncode == 0 and bool(r.stdout.strip())
+        except OSError:
+            return False
+
+    def _wait_gone(app, seconds):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if not app_running(app):
+                return True
+            time.sleep(0.25)
+        return not app_running(app)
+
+    def quit_app(app, progress=None):
+        pat = app.get("cmd") or app.get("path") or ""
+        if not pat or not app_running(app):
+            return True
+        if progress:
+            progress("正在退出 %s…" % app["name"])
+        subprocess.run(["pkill", "-TERM", "-f", pat], capture_output=True)
+        if _wait_gone(app, 5):
+            log("%s 已退出" % app["name"])
+            return True
+        subprocess.run(["pkill", "-KILL", "-f", pat], capture_output=True)
+        ok = _wait_gone(app, 3)
+        log("%s %s" % (app["name"], "已强制退出" if ok else "无法退出，请手动关闭"))
+        return ok
+
+    def launch_app(app):
+        for p in app.get("launch", []):
+            if os.path.exists(p):
+                subprocess.Popen([p], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+                log("启动 %s" % app["name"])
+                return
+        log("未找到 %s 的启动路径（可在 config.json 的 apps 里配置）。" % app["name"])
 else:
     def app_running(app):
         try:
@@ -937,6 +992,9 @@ def reveal_path(path):
     try:
         if IS_WIN:
             os.startfile(path)  # noqa: PTH
+        elif IS_LINUX:
+            subprocess.Popen(["xdg-open", path],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             subprocess.Popen(["open", path])
     except OSError:
@@ -1115,7 +1173,15 @@ def refresh_profile_tokens(doc):
 
 
 def system_dark():
-    """当前系统是否深色模式"""
+    """当前系统是否深色模式（界面库各自跟随系统，这里只给需要手动适配的场合用）"""
+    if IS_LINUX:
+        try:
+            r = subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                capture_output=True, text=True, timeout=5)
+            return "dark" in (r.stdout or "").lower()
+        except (OSError, subprocess.SubprocessError):
+            return False
     if IS_WIN:
         try:
             import winreg
@@ -1140,743 +1206,9 @@ def system_dark():
 # ---------------------------------------------------------------- 图形界面
 
 def gui():
-    import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
-
-    ensure_dirs()
-    cfg = load_config()
-
-    root = tk.Tk()
-    root.title(APP_NAME)
-    root.geometry("780x560")
-    root.minsize(680, 460)
-    root.columnconfigure(0, weight=1)
-    root.rowconfigure(2, weight=1)   # 账号列表 + 日志（可拖动分隔条）
-
-    # 全部使用系统原生控件：macOS 上不自定义任何颜色/字体/形状，
-    # 深浅色随系统自动切换、兼容各 macOS 版本；Windows 无系统配色，手动适配
-    style = ttk.Style()
-    for theme in (("aqua", "vista") if not IS_WIN else ("vista", "aqua")):
-        try:
-            style.theme_use(theme)
-            break
-        except tk.TclError:
-            continue
-
-    if IS_WIN:
-        WIN_PALETTES = {
-            "light": {"page": "#f0f0f0", "card": "#ffffff", "text": "#1f1f1f",
-                      "subtle": "#5f5f5f"},
-            "dark": {"page": "#202020", "card": "#2b2b2b", "text": "#f0f0f0",
-                     "subtle": "#a0a0a0"},
-        }
-        theme_now = {"key": None}
-
-        def apply_theme(force=False):
-            key = cfg.get("theme", "auto")
-            if key == "auto":
-                key = "dark" if system_dark() else "light"
-            if not force and theme_now["key"] == key:
-                return
-            theme_now["key"] = key
-            pal = WIN_PALETTES[key]
-            root.configure(background=pal["page"])
-            style.configure("TFrame", background=pal["page"])
-            style.configure("Subtle.TLabel", background=pal["page"],
-                            foreground=pal["subtle"])
-            style.configure("Treeview", background=pal["card"],
-                            fieldbackground=pal["card"], foreground=pal["text"])
-            style.configure("Treeview.Heading", background=pal["card"],
-                            foreground=pal["subtle"])
-            log_box.configure(background=pal["card"], foreground=pal["text"],
-                              insertbackground=pal["text"])
-
-        def on_theme_changed(_event=None):
-            apply_theme(force=True)
-    else:
-        def apply_theme(force=False):
-            # macOS：控件全部系统自绘；只有经典 Text 日志需要跟一下系统色
-            log_box.configure(background="systemTextBackgroundColor",
-                              foreground="systemTextColor",
-                              insertbackground="systemTextColor")
-
-        def on_theme_changed(_event=None):
-            apply_theme(force=True)
-
-    # 0 顶部：当前账号（标题用系统标题栏，不在窗口里重复）
-    head = ttk.Frame(root, padding=(14, 10, 14, 8))
-    head.grid(row=0, column=0, sticky="ew")
-    current_var = tk.StringVar(value="读取中…")
-    ttk.Label(head, textvariable=current_var, style="Subtle.TLabel").pack(side="left")
-
-    ttk.Separator(root, orient="horizontal").grid(row=1, column=0, sticky="ew")
-
-    # 2 账号列表 + 日志：系统控件带标准内嵌边框，中间可拖动分隔条
-    paned = tk.PanedWindow(root, orient="vertical", sashwidth=6, sashrelief="flat",
-                           bd=0, showhandle=False, opaqueresize=True)
-    paned.grid(row=2, column=0, sticky="nsew", padx=12, pady=(8, 0))
-    list_wrap = tk.Frame(paned, relief="sunken", borderwidth=1,
-                         highlightthickness=0)
-    log_frame = ttk.Frame(paned)
-    paned.add(list_wrap, minsize=140, stretch="always")
-    # 日志有最小高度，拖不小；隐藏只用状态栏按钮
-    paned.add(log_frame, minsize=110, stretch="never")
-
-    list_wrap.columnconfigure(0, weight=1)
-    list_wrap.rowconfigure(0, weight=1)
-    cols = ("name", "uid", "expiry")
-    tree = ttk.Treeview(list_wrap, columns=cols, show="headings", selectmode="extended")
-    tree.heading("name", text="账号（双击切换，可多选）")
-    tree.heading("uid", text="UID")
-    tree.heading("expiry", text="有效期至")
-    tree.column("name", width=240, anchor="w")
-    tree.column("uid", width=230, anchor="w")
-    tree.column("expiry", width=140, anchor="w")
-    vsb = ttk.Scrollbar(list_wrap, orient="vertical", command=tree.yview)
-    tree.configure(yscrollcommand=vsb.set)
-    tree.grid(row=0, column=0, sticky="nsew")
-    vsb.grid(row=0, column=1, sticky="ns")
-
-    log_box = tk.Text(log_frame, height=4, wrap="word", state="disabled",
-                      relief="sunken", borderwidth=1,
-                      padx=10, pady=6, font=(MONO_FONT, 10))
-    log_box.pack(fill="both", expand=True)
-
-    # 3 工具栏（全部系统按钮）
-    bar = ttk.Frame(root, padding=(14, 10, 14, 6))
-    bar.grid(row=3, column=0, sticky="ew")
-    btn_import = ttk.Button(bar, text="导入账号…")
-    btn_import.pack(side="left")
-    btn_capture = ttk.Button(bar, text="保存选中账号")
-    btn_capture.pack(side="left", padx=(8, 0))
-    btn_export = ttk.Button(bar, text="导出账号…")
-    btn_export.pack(side="left", padx=(8, 0))
-    btn_restore = ttk.Button(bar, text="恢复备份…")
-    btn_restore.pack(side="left", padx=(8, 0))
-    btn_switch = ttk.Button(bar, text="切换账号")
-    btn_switch.pack(side="right")
-
-    # 4 状态栏（右侧小按钮）
-    ttk.Separator(root, orient="horizontal").grid(row=4, column=0, sticky="ew",
-                                                  pady=(6, 0))
-    status_bar = ttk.Frame(root)
-    status_bar.grid(row=5, column=0, sticky="ew", pady=(2, 4))
-    status_var = tk.StringVar(value="就绪")
-    ttk.Label(status_bar, textvariable=status_var, style="Subtle.TLabel",
-              anchor="w").pack(side="left", fill="x", expand=True, padx=(4, 0))
-    btn_settings = ttk.Button(status_bar, text="设置…", width=7)
-    btn_settings.pack(side="right", padx=(4, 6), pady=3)
-    btn_log = ttk.Button(status_bar, text="隐藏日志", width=9)
-    btn_log.pack(side="right", padx=4, pady=3)
-
-    busy = {"value": False}
-    buttons = [btn_switch, btn_import, btn_capture, btn_export, btn_restore]
-    log_ui = {"hidden": False, "sash": 0}
-    timer = {"id": None}
-
-    def append_log(msg):
-        log_box.configure(state="normal")
-        log_box.insert("end", msg.rstrip() + "\n")
-        log_box.see("end")
-        log_box.configure(state="disabled")
-
-    def set_busy(flag):
-        busy["value"] = flag
-        state = "disabled" if flag else "normal"
-        for b in buttons:
-            try:
-                b.configure(state=state)
-            except tk.TclError:
-                pass
-
-    # 日志面板：拖到最小自动收起，状态栏按钮展开/收起
-    def sash_get():
-        return paned.sash_coord(0)[1]
-
-    def sash_set(pos):
-        paned.sash_place(0, 0, int(pos))
-
-    def collapse_log():
-        if log_ui["hidden"]:
-            return
-        log_ui["sash"] = sash_get()
-        paned.forget(log_frame)
-        log_ui["hidden"] = True
-        btn_log.configure(text="显示日志")
-
-    def expand_log():
-        if not log_ui["hidden"]:
-            return
-        paned.add(log_frame, minsize=110, stretch="never")
-        pos = log_ui["sash"] or max(220, paned.winfo_height() - 170)
-        root.after_idle(lambda: sash_set(pos))
-        log_ui["hidden"] = False
-        btn_log.configure(text="隐藏日志")
-
-    def toggle_log():
-        collapse_log() if not log_ui["hidden"] else expand_log()
-
-    # 拖动框选（macOS 原生 Treeview 不带橡皮筋选择，自己实现；
-    # 按住 Shift / Ctrl / Command 时不介入，交给系统行为）
-    drag_sel = {"anchor": None, "active": False}
-
-    def on_tree_press(event):
-        drag_sel["anchor"] = tree.identify_row(event.y) or None
-        drag_sel["active"] = False
-
-    def on_tree_motion(event):
-        if event.state & 0x000D or not drag_sel["anchor"] or busy["value"]:
-            return
-        iid = tree.identify_row(event.y)
-        if not iid:
-            return
-        if iid != drag_sel["anchor"]:
-            drag_sel["active"] = True
-        if not drag_sel["active"]:
-            return
-        kids = tree.get_children()
-        try:
-            a, b = kids.index(drag_sel["anchor"]), kids.index(iid)
-        except ValueError:
-            return
-        tree.selection_set(kids[min(a, b):max(a, b) + 1])
-
-    def refresh(select_uids=None):
-        sel = tree.selection()
-        keep = set(select_uids or [])
-        if not keep:
-            keep = {os.path.basename(s)[:-5] for s in sel}
-        for i in tree.get_children():
-            tree.delete(i)
-        cur = read_info()
-        cur_uid = account_uid(cur) if cur else ""
-        if cur:
-            current_var.set("当前登录：%s（有效期至 %s）"
-                            % (account_label(cur), fmt_ts(expiry_of(cur))))
-        else:
-            current_var.set("未找到登录文件")
-        now = int(time.time() * 1000)
-        for p in list_profiles():
-            name = ("● " if p["uid"] == cur_uid else "") + p["label"]
-            exp_txt = fmt_ts(p["expiry"])
-            if p["expiry"] and p["expiry"] < now:
-                exp_txt += "（已过期）"
-            tree.insert("", "end", iid=p["path"],
-                        values=(name, p["uid"], exp_txt))
-        iids = [os.path.join(PROFILE_DIR, "%s.json" % safe_uid(u)) for u in keep]
-        live = [i for i in iids if i in tree.get_children()]
-        if live:
-            tree.selection_set(live)
-            tree.focus(live[0])
-            tree.see(live[0])
-
-    def profile_map():
-        return {p["path"]: p for p in list_profiles()}
-
-    def switch_source():
-        """切换用哪个账号：焦点行优先，否则第一个选中行"""
-        sel = tree.selection()
-        if not sel:
-            status_var.set("请先在列表里选择一个账号")
-            return None
-        iid = tree.focus()
-        if iid not in sel:
-            iid = sel[0]
-        try:
-            return read_json(iid)
-        except (OSError, ValueError) as e:
-            messagebox.showerror(APP_NAME, "读取账号文件失败：%s" % e, parent=root)
-            return None
-
-    def do_switch(doc):
-        """唯一的切换入口：忙时直接忽略，从根上避免重复弹窗/重复切换"""
-        if busy["value"]:
-            return
-        uid = account_uid(doc)
-        running = running_apps()
-        set_busy(True)
-        if running:  # 只有客户端在运行、需要退出时才确认一次
-            names = "、".join(a["name"] for a in running)
-            if not messagebox.askyesno(
-                    APP_NAME,
-                    "切换到 %s？\n将退出并重启：%s（请先保存未保存的文件）"
-                    % (account_label(doc), names), parent=root):
-                set_busy(False)
-                status_var.set("已取消")
-                return
-        q = queue.Queue()
-
-        def worker():
-            try:
-                lines = switch_to(doc, progress=lambda m: q.put(("log", m)))
-                q.put(("done", lines))
-            except Exception as e:  # noqa: BLE001
-                q.put(("error", str(e)))
-
-        status_var.set("正在切换，请稍候…")
-        append_log("—— 切换到 %s ——" % account_label(doc))
-        threading.Thread(target=worker, daemon=True).start()
-
-        def poll():
-            finished = False
-            try:
-                while True:
-                    kind, payload = q.get_nowait()
-                    if kind == "log":
-                        append_log(payload)
-                        status_var.set(payload)
-                    elif kind == "done":
-                        finished = True
-                        for line in payload[1:]:
-                            append_log(line)
-                        append_log(payload[0])
-                        status_var.set("✓ " + payload[0])
-                        refresh([uid])  # 完成不用弹窗，界面内直接反馈
-                        set_busy(False)
-                        if any(l.startswith("已重启") for l in payload[1:]):
-                            # 客户端重启后会自动续期 token，稍后把新登录归档
-                            append_log("客户端重启 2 分钟后自动归档刷新后的登录…")
-                            root.after(120000, auto_capture_quiet)
-                    elif kind == "error":
-                        finished = True
-                        append_log("失败：%s" % payload)
-                        status_var.set("切换失败")
-                        # 弹窗期间保持忙碌状态，避免事件重入造成第二个弹窗
-                        messagebox.showerror(APP_NAME, payload, parent=root)
-                        set_busy(False)
-            except queue.Empty:
-                pass
-            if not finished and busy["value"]:
-                root.after(120, poll)
-
-        root.after(120, poll)
-
-    def on_switch(_event=None):
-        if _event is not None and (_event.state & 0x000C):
-            return  # 按住 Ctrl / Command 操作多选时的双击，不当作切换
-        if len(tree.selection()) > 1:
-            status_var.set("选中了多个账号，请只选一个再切换")
-            return
-        doc = switch_source()
-        if doc:
-            do_switch(doc)
-
-    def auto_capture_quiet():
-        """静默归档当前登录（客户端续期 token 后把新有效期存进档案）"""
-        if busy["value"]:
-            return
-        try:
-            _, doc = capture_current()
-        except (OSError, ValueError):
-            return
-        refresh()
-        append_log("已自动刷新当前登录归档：%s（有效期至 %s）"
-                   % (account_label(doc), fmt_ts(expiry_of(doc))))
-
-    def schedule_auto():
-        if timer["id"] is not None:
-            try:
-                root.after_cancel(timer["id"])
-            except tk.TclError:
-                pass
-        minutes = max(1, int(cfg.get("auto_refresh_minutes", 60) or 60))
-        timer["id"] = root.after(minutes * 60000, auto_tick)
-
-    def auto_tick():
-        timer["id"] = None
-        if cfg.get("auto_refresh", True):
-            auto_capture_quiet()
-        schedule_auto()
-
-    def on_import():
-        if busy["value"]:
-            return
-        path = filedialog.askopenfilename(
-            parent=root, title="选择 workbuddy-<uid>.json",
-            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*")])
-        if not path:
-            return
-        try:
-            _, doc = import_profile(path)
-        except (OSError, ValueError) as e:
-            messagebox.showerror(APP_NAME, str(e), parent=root)
-            return
-        uid = account_uid(doc)
-        refresh([uid])
-        append_log("已导入：%s（%s）" % (account_label(doc), uid))
-        status_var.set("已导入 %s，双击列表即可切换" % account_label(doc))
-
-    def on_capture():
-        """保存选中账号：当前登录的账号才有新数据（客户端续期后的 token）"""
-        if busy["value"]:
-            return
-        cur = read_info()
-        if not cur:
-            messagebox.showinfo(APP_NAME, "当前没有登录文件。", parent=root)
-            return
-        cur_uid = account_uid(cur)
-        pmap = profile_map()
-        sel_uids = [pmap[i]["uid"] for i in tree.selection() if i in pmap]
-        if sel_uids and cur_uid not in sel_uids:
-            messagebox.showinfo(
-                APP_NAME,
-                "选中的账号不是当前登录的账号（标 ● 的是 %s），没有新数据可保存。\n"
-                "要刷新哪个账号，先切换过去再保存。" % account_label(cur),
-                parent=root)
-            return
-        try:
-            _, doc = capture_current()
-        except (OSError, ValueError) as e:
-            messagebox.showerror(APP_NAME, str(e), parent=root)
-            return
-        refresh([cur_uid])
-        append_log("已保存当前登录：%s（有效期至 %s）"
-                   % (account_label(doc), fmt_ts(expiry_of(doc))))
-        status_var.set("已保存 %s" % account_label(doc))
-
-    def on_refresh(_event=None):
-        """手动刷新有效期：明文档案联网换新 token；当前登录顺便重读归档"""
-        if busy["value"]:
-            return
-        sel = tree.selection()
-        pmap = profile_map()
-        items = [(pmap[i]["uid"], pmap[i]["doc"]) for i in sel if i in pmap]
-        if not items:
-            status_var.set("请先选择要刷新的账号")
-            return
-        q = queue.Queue()
-        refreshed = set()
-
-        def worker():
-            for uid, doc in items:
-                try:
-                    doc = refresh_profile_tokens(doc)
-                except (ValueError, RuntimeError, OSError) as e:
-                    q.put(("log", "%s：未续期（%s）"
-                           % (account_label(doc), str(e).splitlines()[0][:60])))
-                    continue
-                try:
-                    write_info(doc, os.path.join(PROFILE_DIR, "%s.json" % safe_uid(uid)))
-                    refreshed.add(uid)
-                    q.put(("log", "%s：已联网续期至 %s"
-                           % (account_label(doc), fmt_ts(expiry_of(doc)))))
-                except OSError as e:
-                    q.put(("log", "%s：续期成功但保存失败（%s）" % (account_label(doc), e)))
-            q.put(("done", None))
-
-        set_busy(True)
-        status_var.set("正在刷新有效期…")
-        append_log("—— 刷新有效期（%d 个账号）——" % len(items))
-        threading.Thread(target=worker, daemon=True).start()
-
-        def poll():
-            finished = False
-            try:
-                while True:
-                    kind, payload = q.get_nowait()
-                    if kind == "log":
-                        append_log(payload)
-                        status_var.set(payload)
-                    elif kind == "done":
-                        finished = True
-                        # 当前登录的账号重读一次登录文件归档（客户端可能已自行续期）；
-                        # 刚联网续期过的不再覆盖，避免用旧 token 盖掉新 token
-                        cur = read_info()
-                        if cur and account_uid(cur) not in refreshed:
-                            before = expiry_of(cur)
-                            try:
-                                _, captured = capture_current()
-                                after = expiry_of(captured)
-                                append_log("当前登录归档已更新（有效期至 %s）"
-                                           % fmt_ts(after))
-                                if after == before and not refreshed:
-                                    append_log("说明：token 离到期还远时，客户端不会向"
-                                               "服务器换新 token，有效期不变属正常；"
-                                               "临近到期时再切换登录一次即可滚动续期。")
-                            except (OSError, ValueError):
-                                pass
-                        refresh([u for u, _ in items])
-                        set_busy(False)
-                        status_var.set("刷新完成")
-            except queue.Empty:
-                pass
-            if not finished and busy["value"]:
-                root.after(120, poll)
-
-        root.after(120, poll)
-
-    def on_delete():
-        if busy["value"]:
-            return
-        sel = tree.selection()
-        if not sel:
-            return
-        pmap = profile_map()
-        uids = [pmap[i]["uid"] for i in sel if i in pmap]
-        if not uids:
-            return
-        shown = "、".join(uids[:3]) + ("…" if len(uids) > 3 else "")
-        if messagebox.askyesno(APP_NAME, "删除 %d 个本地档案？\n%s\n"
-                               "（只删除工具里的存档，不影响客户端当前登录）"
-                               % (len(uids), shown), parent=root):
-            for u in uids:
-                delete_profile(u)
-            refresh()
-            status_var.set("已删除 %d 个档案" % len(uids))
-
-    def on_export():
-        if busy["value"]:
-            return
-        sel = tree.selection()
-        if not sel:
-            status_var.set("请先选择要导出的账号")
-            return
-        pmap = profile_map()
-        items = [(pmap[i]["uid"], pmap[i]["doc"]) for i in sel if i in pmap]
-        if not items:
-            return
-        if len(items) == 1:
-            uid, doc = items[0]
-            path = filedialog.asksaveasfilename(
-                parent=root, title="导出账号", defaultextension=".json",
-                initialfile="workbuddy-%s.json" % safe_uid(uid),
-                filetypes=[("JSON 文件", "*.json")])
-            if not path:
-                return
-            dests = [(path, doc)]
-        else:
-            d = filedialog.askdirectory(
-                parent=root, title="选择导出目录（%d 个账号）" % len(items))
-            if not d:
-                return
-            dests = [(os.path.join(d, "workbuddy-%s.json" % safe_uid(u)), doc)
-                     for u, doc in items]
-        try:
-            for dest, doc in dests:
-                Path(dest).write_text(json.dumps(doc, ensure_ascii=False, indent=2),
-                                      encoding="utf-8")
-        except OSError as e:
-            messagebox.showerror(APP_NAME, "导出失败：%s" % e, parent=root)
-            return
-        append_log("已导出 %d 个账号" % len(dests))
-        status_var.set("已导出 %d 个账号" % len(dests))
-
-    def on_restore():
-        if busy["value"]:
-            return
-        backups = list_backups()
-        if not backups:
-            messagebox.showinfo(APP_NAME, "还没有备份。", parent=root)
-            return
-        win = tk.Toplevel(root)
-        win.title("恢复备份")
-        win.geometry("600x380")
-        win.transient(root)
-        lb = tk.Listbox(win, font=(UI_FONT, 12), selectmode="extended")
-
-        def reload_list():
-            lb.delete(0, "end")
-            for b in backups:
-                lb.insert("end", "%s   %s   %s" % (
-                    datetime.fromtimestamp(b["mtime"]).strftime("%m-%d %H:%M"),
-                    b["label"], b["uid"][:8]))
-
-        reload_list()
-        lb.pack(fill="both", expand=True, padx=12, pady=12)
-
-        def select_all(_event=None):
-            lb.select_set(0, "end")
-
-        def pick(_event=None):
-            sel = lb.curselection()
-            if not sel:
-                return
-            b = backups[sel[0]]  # 恢复第一个选中的
-            try:
-                doc = read_json(b["path"])
-            except (OSError, ValueError) as e:
-                messagebox.showerror(APP_NAME, "备份无法读取：%s" % e, parent=win)
-                return
-            win.destroy()
-            do_switch(doc)
-
-        def del_backups():
-            sel = lb.curselection()
-            if not sel:
-                return
-            if not messagebox.askyesno(
-                    APP_NAME, "删除 %d 个备份文件？\n（只删备份，不影响账号档案和当前登录）"
-                    % len(sel), parent=win):
-                return
-            for idx in sorted(sel, reverse=True):
-                try:
-                    os.remove(backups[idx]["path"])
-                except OSError:
-                    pass
-                del backups[idx]
-            reload_list()
-            if not backups:
-                win.destroy()
-                status_var.set("备份已清空")
-
-        def close():
-            if not busy["value"]:
-                win.destroy()
-
-        btns = ttk.Frame(win)
-        btns.pack(fill="x", padx=12, pady=(0, 12))
-        ttk.Button(btns, text="恢复选中的备份", command=pick).pack(side="left")
-        ttk.Button(btns, text="删除选中备份", command=del_backups).pack(
-            side="left", padx=(8, 0))
-        ttk.Button(btns, text="取消", command=close).pack(side="right")
-        lb.bind("<Double-1>", pick)
-        lb.bind("<%s-a>" % accel, select_all)
-        lb.bind("<%s-A>" % accel, select_all)
-        win.protocol("WM_DELETE_WINDOW", close)
-
-    THEME_LABELS = [("跟随系统", "auto"), ("浅色", "light"), ("深色", "dark")]
-    INTERVALS = [("30 分钟", 30), ("1 小时", 60), ("3 小时", 180),
-                 ("6 小时", 360), ("12 小时", 720), ("每天", 1440)]
-
-    def on_settings():
-        if busy["value"]:
-            return
-        win = tk.Toplevel(root)
-        win.title("设置")
-        win.resizable(False, False)
-        win.transient(root)
-        body = ttk.Frame(win, padding=16)
-        body.pack(fill="both", expand=True)
-        auto_var = tk.BooleanVar(value=bool(cfg.get("auto_refresh", True)))
-        minutes = int(cfg.get("auto_refresh_minutes", 60) or 60)
-        interval_var = tk.StringVar(
-            value=next((lbl for lbl, m in INTERVALS if m == minutes), "1 小时"))
-        restart_var = tk.BooleanVar(value=bool(cfg.get("restart_after_switch", True)))
-        ide_var = tk.BooleanVar(value=bool(cfg.get("switch_ide", True)))
-
-        row = 0
-        if IS_WIN:  # macOS 完全跟随系统外观，不提供覆盖
-            theme_var = tk.StringVar(value=dict((v, k) for k, v in THEME_LABELS).get(
-                cfg.get("theme", "auto"), "跟随系统"))
-            row0 = ttk.Frame(body)
-            row0.grid(row=row, column=0, sticky="w")
-            ttk.Label(row0, text="外观：").pack(side="left")
-            ttk.Combobox(row0, textvariable=theme_var, state="readonly", width=10,
-                         values=[lbl for lbl, _ in THEME_LABELS]).pack(side="left")
-            row += 1
-
-        ttk.Checkbutton(body, text="定时刷新当前账号有效期"
-                        "（客户端自动续期后，工具把新 token 归档）",
-                        variable=auto_var).grid(row=row, column=0, sticky="w",
-                                                pady=(12, 0))
-        row += 1
-        row1 = ttk.Frame(body)
-        row1.grid(row=row, column=0, sticky="w", pady=(4, 0), padx=(24, 0))
-        ttk.Label(row1, text="刷新间隔：").pack(side="left")
-        ttk.Combobox(row1, textvariable=interval_var, state="readonly", width=10,
-                     values=[lbl for lbl, _ in INTERVALS]).pack(side="left")
-        row += 1
-        ttk.Checkbutton(body, text="切换后自动重启客户端",
-                        variable=restart_var).grid(row=row, column=0,
-                                                   sticky="w", pady=(10, 0))
-        row += 1
-        ttk.Checkbutton(body, text="同步切换 CodeBuddy IDE 登录",
-                        variable=ide_var).grid(row=row, column=0, sticky="w", pady=(6, 0))
-        row += 1
-
-        def save():
-            if IS_WIN:
-                cfg["theme"] = dict(THEME_LABELS)[theme_var.get()]
-            cfg["auto_refresh"] = auto_var.get()
-            cfg["auto_refresh_minutes"] = dict(INTERVALS)[interval_var.get()]
-            cfg["restart_after_switch"] = restart_var.get()
-            cfg["switch_ide"] = ide_var.get()
-            save_config(cfg)
-            schedule_auto()
-            apply_theme(force=True)
-            win.destroy()
-            status_var.set("设置已保存")
-
-        btns = ttk.Frame(body)
-        btns.grid(row=row, column=0, sticky="e", pady=(12, 0))
-        ttk.Button(btns, text="确定", command=save).pack(side="left")
-        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=(8, 0))
-
-    def on_select_all(_event=None):
-        kids = tree.get_children()
-        if kids:
-            tree.selection_set(kids)
-
-    menu = tk.Menu(tree, tearoff=0)
-    menu.add_command(label="切换到该账号", command=on_switch)
-    menu.add_command(label="刷新有效期", command=on_refresh)
-    menu.add_command(label="全选", accelerator="Cmd/Ctrl+A", command=on_select_all)
-    menu.add_command(label="导出选中账号…", command=on_export)
-    menu.add_command(label="删除选中档案", accelerator="Delete", command=on_delete)
-    menu.add_separator()
-    menu.add_command(label="恢复备份…", command=on_restore)
-    menu.add_command(label="打开数据目录", command=lambda: reveal_path(STORE))
-
-    def on_menu(event):
-        iid = tree.identify_row(event.y)
-        if iid and not busy["value"]:
-            tree.selection_set(iid)  # 右键聚焦单行，菜单动作始终作用于它
-            menu.tk_popup(event.x_root, event.y_root)
-
-    # 系统菜单栏（macOS 显示在屏幕顶部，Windows 显示在窗口内）
-    accel = "Command" if not IS_WIN else "Control"
-    menubar = tk.Menu(root)
-    m_file = tk.Menu(menubar, tearoff=0)
-    m_file.add_command(label="导入账号…", accelerator="%s-O" % accel,
-                       command=on_import)
-    m_file.add_command(label="导出账号…", command=on_export)
-    m_file.add_command(label="恢复备份…", command=on_restore)
-    m_file.add_separator()
-    m_file.add_command(label="打开数据目录", command=lambda: reveal_path(STORE))
-    menubar.add_cascade(label="文件", menu=m_file)
-    m_edit = tk.Menu(menubar, tearoff=0)
-    m_edit.add_command(label="全选", accelerator="%s-A" % accel, command=on_select_all)
-    m_edit.add_command(label="删除选中档案", command=on_delete)
-    menubar.add_cascade(label="编辑", menu=m_edit)
-    m_act = tk.Menu(menubar, tearoff=0)
-    m_act.add_command(label="切换账号", accelerator="Return", command=on_switch)
-    m_act.add_command(label="保存选中账号", accelerator="%s-S" % accel,
-                      command=on_capture)
-    m_act.add_command(label="刷新有效期", command=on_refresh)
-    menubar.add_cascade(label="账号", menu=m_act)
-    m_view = tk.Menu(menubar, tearoff=0)
-    m_view.add_command(label="隐藏/显示日志", accelerator="%s-L" % accel,
-                       command=toggle_log)
-    m_view.add_command(label="设置…", command=on_settings)
-    menubar.add_cascade(label="显示", menu=m_view)
-    root.configure(menu=menubar)
-
-    btn_switch.configure(command=on_switch)
-    btn_import.configure(command=on_import)
-    btn_capture.configure(command=on_capture)
-    btn_export.configure(command=on_export)
-    btn_restore.configure(command=on_restore)
-    btn_settings.configure(command=on_settings)
-    btn_log.configure(command=toggle_log)
-    root.bind("<<ThemeChanged>>", on_theme_changed)
-    tree.bind("<Double-1>", on_switch)
-    tree.bind("<Return>", on_switch)
-    tree.bind("<Button-3>", on_menu)
-    tree.bind("<Button-1>", on_tree_press, add="+")
-    tree.bind("<B1-Motion>", on_tree_motion, add="+")
-    tree.bind("<%s-a>" % accel, on_select_all)
-    tree.bind("<Delete>", on_delete)
-    tree.bind("<BackSpace>", on_delete)
-
-    apply_theme(force=True)
-    refresh()
-    append_log("数据目录：%s" % STORE)
-    append_log("用法：双击列表切换；拖动或按住 Ctrl / Command 多选，"
-               "右键可刷新有效期、导出、删除。")
-    append_log("提示：首次同步 IDE 时如弹出钥匙串授权，请点「始终允许」。")
-    root.after(150, lambda: sash_set(max(220, paned.winfo_height() - 165)))
-    schedule_auto()
-    root.mainloop()
+    """图形界面（PySide6 / Qt，Windows / macOS / Linux 原生外观），见 buddy_gui.py"""
+    from buddy_gui import run
+    return run()
 
 
 # ---------------------------------------------------------------- 命令行
@@ -1969,4 +1301,4 @@ def cli(argv):
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         sys.exit(cli(sys.argv[1:]))
-    gui()
+    sys.exit(gui() or 0)

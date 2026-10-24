@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""离线自测：核心文档逻辑 / 导入导出 / 旧数据迁移 / GUI 构建。不碰真实登录文件。"""
+"""离线自测：核心文档逻辑 / 导入导出 / 旧数据迁移 / GUI 模块可导入。不碰真实登录文件。"""
 
 import json
 import os
@@ -246,22 +246,10 @@ class StoreTest(unittest.TestCase):
 
 
 class GuiSmokeTest(unittest.TestCase):
-    def test_gui_builds(self):
-        try:
-            import tkinter as tk
-        except ImportError:
-            self.skipTest("no tkinter")
-        root = tk.Tk()
-        root.withdraw()
-        root.title(bs.APP_NAME)
-        # 构建关键控件并处理一轮事件，验证无异常
-        from tkinter import ttk
-        tree = ttk.Treeview(root, columns=("name", "expiry"), show="headings")
-        tree.insert("", "end", values=("账号A", "2027-01-01"))
-        tree.tag_configure("current", background="#dbeafe")
-        tree.update()
-        root.update()
-        root.destroy()
+    def test_gui_module_importable(self):
+        # PySide6 界面模块本身可导入（不启动事件循环）
+        import buddy_gui
+        self.assertTrue(callable(buddy_gui.run))
 
 
 if __name__ == "__main__":
