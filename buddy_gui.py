@@ -94,62 +94,10 @@ def run():
         if translator.load(QtCore.QLocale("zh_CN"), "qtbase", "_", str(tr_dir)):
             app.installTranslator(translator)
             break
-
-    class RowPanelProxyStyle(QtWidgets.QProxyStyle):
-        """macOS 的表格/列表会先自己画一层横跨整行的方形选中底
-        （PE_PanelItemViewRow），把委托画的访达式圆角盖住；选中时跳过它。"""
-
-        def drawPrimitive(self, element, option, painter, widget=None):
-            if (element == QtWidgets.QStyle.PE_PanelItemViewRow
-                    and option.state & QtWidgets.QStyle.State_Selected):
-                return
-            super().drawPrimitive(element, option, painter, widget)
-
-    app.setStyle(RowPanelProxyStyle())
     if not bs.IS_MAC:  # macOS 用 .app 包里的图标；其余平台设置窗口图标
         icon_path = _resource_path("assets/icon_1024.png")
         if icon_path:
             app.setWindowIcon(QtGui.QIcon(icon_path))
-
-    class RoundedSelDelegate(QtWidgets.QStyledItemDelegate):
-        """访达式圆角选中：每行画一个横跨整行的圆角矩形。
-        表格里只在最左列画背景（其余列只把文字改成高亮前景色），
-        避免三个单元格各画一块拼成一条蓝带。"""
-
-        def paint(self, painter, option, index):
-            opt = QtWidgets.QStyleOptionViewItem(option)
-            self.initStyleOption(opt, index)
-            if opt.state & QtWidgets.QStyle.State_Selected:
-                rect = opt.rect
-                draw_bg = True
-                view = opt.widget
-                hdr = (view.horizontalHeader()
-                       if isinstance(view, QtWidgets.QTableView) else None)
-                if hdr is not None and hdr.count() > 0:
-                    first = min(range(hdr.count()), key=hdr.visualIndex)
-                    if index.column() != first:
-                        draw_bg = False
-                    else:
-                        last = max(range(hdr.count()), key=hdr.visualIndex)
-                        left = view.columnViewportPosition(first)
-                        right = (view.columnViewportPosition(last)
-                                 + view.columnWidth(last))
-                        rect = QtCore.QRect(left, opt.rect.top(),
-                                            right - left, opt.rect.height())
-                if draw_bg:
-                    painter.save()
-                    painter.setRenderHint(QtGui.QPainter.Antialiasing)
-                    painter.setPen(QT.NoPen)
-                    painter.setBrush(opt.palette.highlight())
-                    painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 6, 6)
-                    painter.restore()
-                # 去掉选中态，避免再画一层方形高亮；文字改用高亮前景色
-                opt.state &= ~QtWidgets.QStyle.State_Selected
-                opt.palette.setColor(QtGui.QPalette.ColorRole.Text,
-                                     opt.palette.highlightedText().color())
-            opt.state &= ~QtWidgets.QStyle.State_HasFocus
-            QtWidgets.QApplication.style().drawControl(
-                QtWidgets.QStyle.CE_ItemViewItem, opt, painter, opt.widget)
 
     class MainWindow(QtWidgets.QMainWindow):
         """主窗口：支持把 json 拖进窗口导入；双击文件用本应用打开时导入"""
@@ -226,7 +174,6 @@ def run():
     table.setAlternatingRowColors(True)
     table.setShowGrid(False)  # 苹果列表风格：不画网格线
     table.setContextMenuPolicy(QT.CustomContextMenu)
-    table.setItemDelegate(RoundedSelDelegate(table))  # 访达式圆角选中
     table.verticalHeader().setVisible(False)
     header = table.horizontalHeader()
     header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
@@ -709,7 +656,6 @@ def run():
         lay = QtWidgets.QVBoxLayout(dlg)
         lb = QtWidgets.QListWidget()
         lb.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        lb.setItemDelegate(RoundedSelDelegate(lb))  # 访达式圆角选中
         lay.addWidget(lb)
 
         def reload_list():
