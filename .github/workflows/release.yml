@@ -35,10 +35,7 @@ jobs:
 
       - name: Build (macOS app + dmg)
         if: runner.os == 'macOS'
-        run: |
-          pyinstaller --noconfirm --clean --windowed --name "Buddy Switcher" buddy_switch.py
-          codesign --force --deep -s - "dist/Buddy Switcher.app"
-          hdiutil create -volname "Buddy Switcher" -srcfolder "dist/Buddy Switcher.app" -ov -format UDZO BuddySwitcher-macOS.dmg
+        run: bash scripts/package_macos.sh
 
       - name: Build (Windows exe + zip)
         if: runner.os == 'Windows'
@@ -51,7 +48,7 @@ jobs:
         with:
           name: BuddySwitcher-${{ matrix.os_name }}
           path: |
-            BuddySwitcher-macOS.dmg
+            dist/BuddySwitcher-macOS.dmg
             BuddySwitcher-Windows.zip
 
   release:

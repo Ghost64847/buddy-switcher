@@ -970,11 +970,10 @@ def gui():
 
     root = tk.Tk()
     root.title(APP_NAME)
-    root.geometry("720x540")
+    root.geometry("720x560")
     root.minsize(640, 460)
     root.columnconfigure(0, weight=1)
-    root.rowconfigure(1, weight=1)   # 账号列表
-    root.rowconfigure(3, weight=0)   # 日志
+    root.rowconfigure(1, weight=1)   # 列表 + 日志（可拖动分隔条调整）
 
     bg = "#f5f6f8"
     root.configure(background=bg)
@@ -998,9 +997,13 @@ def gui():
     ttk.Label(head, textvariable=current_var, style="Subtle.TLabel").pack(
         side="left", padx=(16, 0), pady=(6, 0))
 
-    # 1 账号列表
-    list_frame = ttk.Frame(root, padding=(18, 0, 18, 0))
-    list_frame.grid(row=1, column=0, sticky="nsew")
+    # 1 账号列表 + 日志（上下可拖动分隔条调整占比）
+    paned = ttk.PanedWindow(root, orient="vertical")
+    paned.grid(row=1, column=0, sticky="nsew")
+    list_frame = ttk.Frame(paned, padding=(18, 0, 18, 0))
+    log_frame = ttk.Frame(paned, padding=(18, 4, 18, 0))
+    paned.add(list_frame, weight=3)
+    paned.add(log_frame, weight=1)
     list_frame.columnconfigure(0, weight=1)
     list_frame.rowconfigure(0, weight=1)
     cols = ("name", "expiry")
@@ -1030,21 +1033,20 @@ def gui():
     btn_switch = ttk.Button(bar, text="切换账号 ▶", style="Big.TButton")
     btn_switch.pack(side="right", ipady=3)
 
-    # 3 日志
-    log_frame = ttk.Frame(root, padding=(18, 4, 18, 0))
-    log_frame.grid(row=3, column=0, sticky="ew")
+    # 3 日志（在 PanedWindow 下半区，拖动分隔条可调高度）
     log_frame.columnconfigure(0, weight=1)
+    log_frame.rowconfigure(0, weight=1)
     log_box = tk.Text(log_frame, height=4, wrap="word", state="disabled",
                       background="#ffffff", relief="solid", borderwidth=1,
                       padx=10, pady=6, font=(MONO_FONT, 10))
-    log_box.grid(row=0, column=0, sticky="ew")
+    log_box.grid(row=0, column=0, sticky="nsew")
 
     # 4 状态栏
     status_var = tk.StringVar(value="就绪")
     status = ttk.Label(root, textvariable=status_var, anchor="w",
                        background="#ebedf0", foreground="#374151",
                        font=(UI_FONT, 11), padding=8)
-    status.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+    status.grid(row=3, column=0, sticky="ew", pady=(8, 0))
 
     busy = {"value": False}
     buttons = [btn_switch, btn_import, btn_capture, btn_restore, btn_folder]
