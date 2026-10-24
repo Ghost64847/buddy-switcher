@@ -38,47 +38,49 @@ def icns_to_png(icns: Path, out_png: Path) -> None:
         out_png.write_bytes(best.read_bytes())
 
 
-def _fade_mask(img, keep_left: bool, x0: int, x1: int, size: int):
-    """用渐变遮罩改透明度：keep_left 时左实右虚（中间线性过渡），否则反之"""
-    from PySide6 import QtGui
-
-    out = QtGui.QImage(img)
-    painter = QtGui.QPainter(out)
-    painter.setCompositionMode(QtGui.QPainter.CompositionMode_DestinationIn)
-    grad = QtGui.QLinearGradient(0, 0, size, 0)
-    opaque = QtGui.QColor(255, 255, 255, 255)
-    clear = QtGui.QColor(255, 255, 255, 0)
-    t0, t1 = x0 / size, x1 / size
-    stops = [(0.0, opaque), (t0, opaque), (t1, clear), (1.0, clear)] if keep_left \
-        else [(0.0, clear), (t0, clear), (t1, opaque), (1.0, opaque)]
-    for pos, color in stops:
-        grad.setColorAt(pos, color)
-    painter.fillRect(0, 0, size, size, grad)
-    painter.end()
-    return out
-
-
 def compose(left_png: Path, right_png: Path, out_png: Path, size: int = 1024) -> None:
-    """两个图标各铺满画布，中间 24% 宽度交叉淡化（淡色过渡）"""
+    """两个原版图标各自满幅铺画布：左半显示左图、右半显示右图、
+    中间 24% 宽度做预乘 alpha 交叉淡化（透明像素不带入白色，无白边）。
+    不裁边、不留白，和原版图标一样满铺。"""
     from PySide6 import QtCore, QtGui
 
     def load_full(p):
-        img = QtGui.QImage(str(p)).scaled(
-            size, size, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.SmoothTransformation)
-        return img.convertToFormat(QtGui.QImage.Format.Format_ARGB32)
+        img = QtGui.QImage(str(p)).convertToFormat(
+            QtGui.QImage.Format.Format_ARGB32)
+        return img.scaled(size, size, QtCore.Qt.IgnoreAspectRatio,
+                          QtCore.Qt.SmoothTransformation)
 
+    li, ri = load_full(left_png), load_full(right_png)
+    lb = bytes(li.bits())
+    rb = bytes(ri.bits())
     band = int(size * 0.24)
     x0 = (size - band) // 2
     x1 = x0 + band
-    li = _fade_mask(load_full(left_png), True, x0, x1, size)
-    ri = _fade_mask(load_full(right_png), False, x0, x1, size)
+    out = bytearray(size * size * 4)
 
-    canvas = QtGui.QImage(size, size, QtGui.QImage.Format.Format_ARGB32)
-    canvas.fill(QtCore.Qt.transparent)
-    painter = QtGui.QPainter(canvas)
-    painter.drawImage(0, 0, ri)
-    painter.drawImage(0, 0, li)
-    painter.end()
+    for y in range(size):
+        row = y * size * 4
+        for x in range(size):
+            o = row + x * 4
+            if x <= x0:
+                out[o:o + 4] = lb[o:o + 4]
+            elif x >= x1:
+                out[o:o + 4] = rb[o:o + 4]
+            else:
+                l4 = lb[o:o + 4]
+                r4 = rb[o:o + 4]
+                t = (x - x0) / band
+                wl = (1.0 - t) * l4[3]
+                wr = t * r4[3]
+                a = wl + wr
+                if a <= 0:
+                    continue
+                for c in range(3):
+                    out[o + c] = min(255, int((l4[c] * wl + r4[c] * wr) / a))
+                out[o + 3] = min(255, int(a))
+
+    canvas = QtGui.QImage(bytes(out), size, size, size * 4,
+                          QtGui.QImage.Format.Format_ARGB32)
     canvas.save(str(out_png), "PNG")
 
 

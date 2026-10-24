@@ -114,27 +114,30 @@ def run():
 
     win.setCentralWidget(central)
 
-    # 原生工具栏（macOS 上与标题栏融为一体，其余平台在菜单栏下方）
-    toolbar = QtWidgets.QToolBar("主工具栏")
-    toolbar.setMovable(False)
-    toolbar.setToolButtonStyle(QT.ToolButtonTextOnly)
-    win.addToolBar(QT.TopToolBarArea, toolbar)
-    if bs.IS_MAC:
-        try:
-            win.setUnifiedTitleAndToolBarOnMac(True)
-        except AttributeError:
-            pass  # 个别 Qt 版本没有该接口，退回普通工具栏
-
-    status_label = QtWidgets.QLabel("就绪")
+    # 底部一行按钮（全部操作集中一行，原生系统按钮）
+    bar = QtWidgets.QHBoxLayout()
+    btn_import = QtWidgets.QPushButton("导入账号…")
+    btn_capture = QtWidgets.QPushButton("保存选中账号")
+    btn_export = QtWidgets.QPushButton("导出选中账号…")
+    btn_restore = QtWidgets.QPushButton("恢复备份…")
+    btn_switch = QtWidgets.QPushButton("切换账号")
     btn_settings = QtWidgets.QPushButton("设置…")
     btn_log = QtWidgets.QPushButton("隐藏日志")
+    for b in (btn_import, btn_capture, btn_export, btn_restore):
+        bar.addWidget(b)
+    bar.addStretch(1)
+    for b in (btn_settings, btn_log, btn_switch):
+        bar.addWidget(b)
+    layout.addLayout(bar)
+
+    status_label = QtWidgets.QLabel("就绪")
     status = win.statusBar()
     status.addWidget(status_label)
-    status.addPermanentWidget(btn_settings)
-    status.addPermanentWidget(btn_log)
 
     busy = {"value": False}
     log_hidden = {"value": False}
+    buttons = [btn_switch, btn_import, btn_capture, btn_export, btn_restore,
+               btn_settings, btn_log]
 
     def append_log(msg):
         log.appendPlainText(msg.rstrip())
@@ -144,6 +147,8 @@ def run():
 
     def set_busy(flag):
         busy["value"] = flag
+        for b in buttons:
+            b.setEnabled(not flag)
 
     def profile_map():
         return {p["path"]: p for p in bs.list_profiles()}
@@ -288,18 +293,25 @@ def run():
     def on_import(checked=False):
         if busy["value"]:
             return
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            win, "选择 workbuddy-<uid>.json", "", "JSON 文件 (*.json);;所有文件 (*)")
-        if not path:
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            win, "选择一个或多个 workbuddy-<uid>.json", "",
+            "JSON 文件 (*.json);;所有文件 (*)")
+        if not paths:
             return
-        try:
-            _, doc = bs.import_profile(path)
-        except (OSError, ValueError) as e:
-            QtWidgets.QMessageBox.critical(win, bs.APP_NAME, str(e))
-            return
-        refresh([bs.account_uid(doc)])
-        append_log("已导入：%s（%s）" % (bs.account_label(doc), bs.account_uid(doc)))
-        set_status("已导入 %s，双击列表即可切换" % bs.account_label(doc))
+        done_uids = []
+        for path in paths:
+            try:
+                _, doc = bs.import_profile(path)
+            except (OSError, ValueError) as e:
+                append_log("导入失败 %s：%s" % (os.path.basename(path), e))
+                continue
+            done_uids.append(bs.account_uid(doc))
+            append_log("已导入：%s（%s）" % (bs.account_label(doc), bs.account_uid(doc)))
+        refresh(done_uids)
+        if done_uids:
+            set_status("已导入 %d 个账号，双击列表即可切换" % len(done_uids))
+        else:
+            set_status("导入失败，详见日志")
 
     def on_capture(checked=False):
         """保存选中账号：当前登录的账号才有新数据（客户端续期后的 token）"""
@@ -516,7 +528,7 @@ def run():
 
         reload_list()
         row = QtWidgets.QHBoxLayout()
-        btn_pick = QtWidgets.QPushButton("恢复选中的备份")
+        btn_pick = QtWidgets.QPushButton("恢复选中的备份（替换当前登录）")
         btn_del = QtWidgets.QPushButton("删除选中备份")
         btn_close = QtWidgets.QPushButton("关闭")
         row.addWidget(btn_pick)
@@ -626,27 +638,11 @@ def run():
     m_view.addAction("设置…", on_settings,
                      QtGui.QKeySequence.StandardKey.Preferences)
 
-    # 工具栏动作（替代底部按钮行）
-    act_import_tb = QtGui.QAction("导入账号…", win)
-    act_import_tb.triggered.connect(on_import)
-    act_capture_tb = QtGui.QAction("保存选中账号", win)
-    act_capture_tb.triggered.connect(on_capture)
-    act_export_tb = QtGui.QAction("导出账号…", win)
-    act_export_tb.triggered.connect(on_export)
-    act_restore_tb = QtGui.QAction("恢复备份…", win)
-    act_restore_tb.triggered.connect(on_restore)
-    toolbar.addAction(act_import_tb)
-    toolbar.addAction(act_capture_tb)
-    toolbar.addAction(act_export_tb)
-    toolbar.addAction(act_restore_tb)
-    spacer = QtWidgets.QWidget()
-    spacer.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
-                         QtWidgets.QSizePolicy.Preferred)
-    toolbar.addWidget(spacer)
-    act_switch_tb = QtGui.QAction("切换账号", win)
-    act_switch_tb.triggered.connect(on_switch)
-    toolbar.addAction(act_switch_tb)
-
+    btn_switch.clicked.connect(on_switch)
+    btn_import.clicked.connect(on_import)
+    btn_capture.clicked.connect(on_capture)
+    btn_export.clicked.connect(on_export)
+    btn_restore.clicked.connect(on_restore)
     btn_settings.clicked.connect(on_settings)
     btn_log.clicked.connect(toggle_log)
 
